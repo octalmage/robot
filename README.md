@@ -48,6 +48,9 @@ robot waitForText "Options" --timeout 30000
 
 All successful commands print JSON to stdout.
 
+`type` defaults to 12,000 characters per minute (5 ms per character). Use
+`--cpm` to choose a different speed.
+
 Text search results include a `matches` array with every candidate's 1-based
 `index`, confidence, bounds, and screen point. `clickText` and `clickWord`
 accept that index as a trailing argument, so `robot clickText "Message General"

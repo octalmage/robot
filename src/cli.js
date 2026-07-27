@@ -38,6 +38,7 @@ Notes:
 `;
 
 const BOOLEAN_OPTIONS = new Set(["double", "help", "pretty", "exact", "keep-capture"]);
+const DEFAULT_TYPING_CPM = 12000;
 
 function createCliError(message, code, exitCode) {
   const error = new Error(message);
@@ -727,17 +728,17 @@ async function execute(command, argv, context) {
         throw createCliError("type expects text to type.", "INVALID_ARGUMENT");
       }
 
-      if (typeof options.cpm === "undefined") {
-        robot.typeString(text);
-      } else {
-        robot.typeStringDelayed(text, toNumber(options.cpm, "cpm"));
-      }
+      const cpm = typeof options.cpm === "undefined"
+        ? DEFAULT_TYPING_CPM
+        : toNumber(options.cpm, "cpm");
+
+      robot.typeStringDelayed(text, cpm);
 
       return {
         ok: true,
         command: "type",
         text: text,
-        cpm: typeof options.cpm === "undefined" ? null : toNumber(options.cpm, "cpm")
+        cpm: cpm
       };
     }
 

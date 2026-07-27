@@ -208,6 +208,25 @@ test("types joined text with an optional typing speed", async () => {
   assert.equal(result.cpm, 300);
 });
 
+test("types with a reliable default speed", async () => {
+  const stdout = createStream();
+  const stderr = createStream();
+  const calls = [];
+  const robot = createRobot({
+    typeStringDelayed(text, cpm) {
+      calls.push({ text, cpm });
+    }
+  });
+
+  const exitCode = await run(["type", "hello"], { stdout, stderr, robot });
+  const result = JSON.parse(stdout.read());
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(calls, [{ text: "hello", cpm: 12000 }]);
+  assert.equal(result.text, "hello");
+  assert.equal(result.cpm, 12000);
+});
+
 test("captures a screenshot and saves it to the requested output path", async () => {
   const stdout = createStream();
   const stderr = createStream();
