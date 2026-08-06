@@ -5,7 +5,7 @@ Single-shot desktop automation with mouse, keyboard, image matching, and OCR.
 ## Installation
 
 Requires Node.js 22 or newer. `robotjs@0.9.0` currently has no release
-prebuilds, so npm compiles its native addon during installation; install the
+prebuilds, so npm compiles its native addon during installation. Make sure to install the
 [RobotJS build prerequisites](https://github.com/octalmage/robotjs#building)
 for your platform first.
 
@@ -152,7 +152,7 @@ provided, `--rec-langs <langs>`. It must print a JSON array:
 
 ## Generated interfaces
 
-The Incur command definitions generate help, JSON Schema, LLM manifests,
+The command definitions generate help, JSON Schema, LLM manifests,
 completions, MCP tools, and Agent skills:
 
 ```sh
@@ -167,9 +167,6 @@ robot skills add --no-global
 robot skills list
 robot --mcp
 ```
-
-Desktop commands load `robotjs` only when invoked. Help, schemas, manifests,
-skills, and completions do not load the native module.
 
 ## Development
 

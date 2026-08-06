@@ -1,5 +1,5 @@
 {
-  "name": "robotcli",
+  "name": "getrobot",
   "version": "0.1.0",
   "description": "Single-shot desktop automation with mouse, keyboard, image matching, and OCR",
   "author": "Jason Stallings",
