@@ -2,12 +2,12 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { Readable } from "node:stream";
-import { pipeline } from "node:stream/promises";
 
 const MODEL_CACHE_DIRECTORY = path.join(os.homedir(), ".cache", "ppu-paddle-ocr");
-const MODEL_BASE_URL = "https://media.githubusercontent.com/media/PT-Perkasa-Pilar-Utama/ppu-paddle-ocr-models/main";
-const DICTIONARY_BASE_URL = "https://raw.githubusercontent.com/PT-Perkasa-Pilar-Utama/ppu-paddle-ocr-models/main";
+const MODEL_REPOSITORY = "PT-Perkasa-Pilar-Utama/ppu-paddle-ocr-models";
+const MODEL_REVISION = "9027d49d3764d465c3d7c4e8506910fb8d9c1498";
+const MODEL_BASE_URL = `https://media.githubusercontent.com/media/${MODEL_REPOSITORY}/${MODEL_REVISION}`;
+const DICTIONARY_BASE_URL = `https://raw.githubusercontent.com/${MODEL_REPOSITORY}/${MODEL_REVISION}`;
 const MODEL_ASSETS = {
   detection: {
     file: "PP-OCRv6_tiny_det.ort",
@@ -43,7 +43,12 @@ function createOcrError(message, code) {
 }
 
 export function toArrayBuffer(buffer) {
-  return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
+  const { byteOffset, byteLength } = buffer;
+  const arrayBuffer = buffer.buffer;
+  if (byteOffset === 0 && byteLength === arrayBuffer.byteLength) {
+    return arrayBuffer;
+  }
+  return arrayBuffer.slice(byteOffset, byteOffset + byteLength);
 }
 
 async function modelFileIsValid(assetPath, entry) {
@@ -72,56 +77,30 @@ async function modelFileIsValid(assetPath, entry) {
 
 async function downloadModelAsset(entry, cacheDirectory, fetchResource) {
   const cachePath = path.join(cacheDirectory, entry.file);
-  const tempPath = path.join(
-    cacheDirectory,
-    `.${entry.file}.${process.pid}.${crypto.randomUUID()}.tmp`
-  );
-
-  await fs.promises.mkdir(cacheDirectory, { recursive: true });
 
   try {
     const response = await fetchResource(entry.url, {
       signal: AbortSignal.timeout(60000)
     });
 
-    if (!response?.ok || !response.body) {
+    if (!response?.ok) {
       throw createOcrError(
         `Could not download OCR model ${entry.file}: HTTP ${response?.status ?? "unknown"}.`,
         "OCR_MODEL_DOWNLOAD_FAILED"
       );
     }
 
-    await pipeline(
-      Readable.fromWeb(response.body),
-      fs.createWriteStream(tempPath, { flags: "wx" })
-    );
-
-    if (!(await modelFileIsValid(tempPath, entry))) {
+    const contents = Buffer.from(await response.arrayBuffer());
+    const checksum = crypto.createHash("sha256").update(contents).digest("hex");
+    if (contents.byteLength !== entry.size || checksum !== entry.sha256) {
       throw createOcrError(
         `Downloaded OCR model ${entry.file} failed size or checksum verification.`,
         "OCR_MODEL_INVALID"
       );
     }
 
-    if (await modelFileIsValid(cachePath, entry)) {
-      return cachePath;
-    }
-
-    try {
-      await fs.promises.rename(tempPath, cachePath);
-    } catch (error) {
-      if (!["EEXIST", "EPERM"].includes(error.code)) {
-        throw error;
-      }
-
-      if (await modelFileIsValid(cachePath, entry)) {
-        return cachePath;
-      }
-
-      await fs.promises.rm(cachePath, { force: true });
-      await fs.promises.rename(tempPath, cachePath);
-    }
-
+    await fs.promises.mkdir(cacheDirectory, { recursive: true });
+    await fs.promises.writeFile(cachePath, contents);
     return cachePath;
   } catch (error) {
     if (error?.code?.startsWith("OCR_")) {
@@ -131,8 +110,6 @@ async function downloadModelAsset(entry, cacheDirectory, fetchResource) {
       `Could not download OCR model ${entry.file}: ${error.message}`,
       "OCR_MODEL_DOWNLOAD_FAILED"
     );
-  } finally {
-    await fs.promises.rm(tempPath, { force: true });
   }
 }
 
@@ -175,78 +152,41 @@ function normalizeBounds(bounds) {
   return normalized;
 }
 
-function boundsFromQuad(quad, info) {
-  if (!quad || !info || !Number(info.width) || !Number(info.height)) {
-    return null;
-  }
-
-  const points = [quad.topLeft, quad.topRight, quad.bottomLeft, quad.bottomRight];
-
-  if (points.some((point) => !point || !Number.isFinite(Number(point.x)) || !Number.isFinite(Number(point.y)))) {
-    return null;
-  }
-
-  const xs = points.map((point) => Number(point.x) * Number(info.width));
-  const ys = points.map((point) => Number(point.y) * Number(info.height));
-  const minX = Math.min(...xs);
-  const maxX = Math.max(...xs);
-  const minY = Math.min(...ys);
-  const maxY = Math.max(...ys);
-
-  return normalizeBounds({
-    x: minX,
-    y: minY,
-    width: Math.max(maxX - minX, 1),
-    height: Math.max(maxY - minY, 1)
-  });
-}
-
-export function normalizeOcrItems(payload) {
-  let sourceItems;
-  let legacyInfo = null;
-
-  if (Array.isArray(payload)) {
-    sourceItems = payload;
-  } else if (payload && Array.isArray(payload.items)) {
-    sourceItems = payload.items;
-  } else if (payload && Array.isArray(payload.results)) {
-    sourceItems = payload.results;
-  } else if (payload && Array.isArray(payload.observations)) {
-    sourceItems = payload.observations;
-    legacyInfo = payload.info;
-  } else {
+function normalizeOcrItems(items) {
+  if (!Array.isArray(items)) {
     throw createOcrError("OCR backend did not return a list of text items.", "OCR_OUTPUT_INVALID");
   }
 
-  return sourceItems.reduce((items, item) => {
+  const normalized = [];
+  for (const item of items) {
     if (!item || typeof item.text !== "string" || item.text.length === 0) {
-      return items;
+      continue;
     }
 
-    const bounds = normalizeBounds(item.bounds || item.box) || boundsFromQuad(item.quad, legacyInfo);
-
+    const bounds = normalizeBounds(item.bounds) || normalizeBounds(item.box);
     if (!bounds) {
-      return items;
+      continue;
     }
 
-    items.push({
+    const confidence = Number(item.confidence);
+    normalized.push({
       text: item.text,
-      confidence: Number.isFinite(Number(item.confidence)) ? Number(item.confidence) : 0,
+      confidence: Number.isFinite(confidence) ? confidence : 0,
       bounds
     });
+  }
 
-    return items;
-  }, []);
+  return normalized;
 }
 
 export function createPaddleBackend(settings = {}, dependencies = {}) {
-  const strategy = settings.strategy || DEFAULT_OCR_STRATEGY;
+  const strategy = settings.strategy ?? DEFAULT_OCR_STRATEGY;
   const recognition = { strategy };
   const resolvedDependencies = {
-    cacheDirectory: dependencies.cacheDirectory || MODEL_CACHE_DIRECTORY,
-    modelAssets: dependencies.modelAssets || MODEL_ASSETS,
-    fetchResource: dependencies.fetchResource || globalThis.fetch,
-    loadPaddle: dependencies.loadPaddle || (() => import("ppu-paddle-ocr"))
+    cacheDirectory: dependencies.cacheDirectory ?? MODEL_CACHE_DIRECTORY,
+    modelAssets: dependencies.modelAssets ?? MODEL_ASSETS,
+    fetchResource: dependencies.fetchResource ?? globalThis.fetch,
+    loadPaddle: dependencies.loadPaddle ?? (() => import("ppu-paddle-ocr"))
   };
   let servicePromise = null;
   let activeService = null;
@@ -291,9 +231,9 @@ export function createPaddleBackend(settings = {}, dependencies = {}) {
       const result = await service.recognize(image, {
         flatten: true,
         noCache: true,
-        strategy: options.strategy || strategy
+        strategy: options.strategy ?? strategy
       });
-      return normalizeOcrItems(result);
+      return normalizeOcrItems(result?.results);
     },
     async destroy() {
       if (!activeService && servicePromise) {
@@ -315,7 +255,7 @@ export function createExternalBackend(binary, runner) {
   return {
     name: "external",
     async recognize(image, options) {
-      const settings = options || {};
+      const settings = options ?? {};
 
       if (!(image instanceof ArrayBuffer)) {
         throw createOcrError("External OCR expects captured image data as an ArrayBuffer.", "OCR_INPUT_INVALID");
@@ -336,7 +276,7 @@ export function createExternalBackend(binary, runner) {
 
       try {
         payload = typeof stdout === "string" ? JSON.parse(stdout) : stdout;
-      } catch (error) {
+      } catch {
         throw createOcrError("OCR output was not valid JSON.", "OCR_OUTPUT_INVALID");
       }
 

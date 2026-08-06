@@ -69,13 +69,16 @@ function createRetinaNeedle(image) {
   const source = Buffer.from(image.image.buffer, image.image.byteOffset, image.image.byteLength);
 
   for (let y = 0; y < height; y += 1) {
-    const sourceRow = ((y * 2) + 1) * sourceByteWidth;
-    const targetRow = y * byteWidth;
+    let sourceOffset = (((y * 2) + 1) * sourceByteWidth) + bytesPerPixel;
+    let targetOffset = y * byteWidth;
+    const targetEnd = targetOffset + byteWidth;
 
-    for (let x = 0; x < width; x += 1) {
-      const sourceOffset = sourceRow + (((x * 2) + 1) * bytesPerPixel);
-      const targetOffset = targetRow + (x * bytesPerPixel);
-      source.copy(pixels, targetOffset, sourceOffset, sourceOffset + bytesPerPixel);
+    while (targetOffset < targetEnd) {
+      for (let channel = 0; channel < bytesPerPixel; channel += 1) {
+        pixels[targetOffset + channel] = source[sourceOffset + channel];
+      }
+      sourceOffset += bytesPerPixel * 2;
+      targetOffset += bytesPerPixel;
     }
   }
 
@@ -91,8 +94,7 @@ function createRetinaNeedle(image) {
 
 function createImageMatcher(needle, searchOptions) {
   let retinaNeedle;
-  let retinaNeedleResolved = false;
-
+  let retinaSearchOptions;
   return (capture) => {
     const match = capture.findImage(needle, searchOptions);
     if (match) {
@@ -104,21 +106,25 @@ function createImageMatcher(needle, searchOptions) {
       };
     }
 
-    if (!retinaNeedleResolved) {
+    if (retinaNeedle === undefined) {
       retinaNeedle = createRetinaNeedle(needle);
-      retinaNeedleResolved = true;
+      if (retinaNeedle) {
+        retinaSearchOptions = {
+          ...searchOptions,
+          tolerance: searchOptions.tolerance ?? RETINA_FALLBACK_TOLERANCE
+        };
+      }
     }
 
     if (retinaNeedle) {
-      const tolerance = searchOptions.tolerance ?? RETINA_FALLBACK_TOLERANCE;
-      const retinaMatch = capture.findImage(retinaNeedle, { ...searchOptions, tolerance });
+      const retinaMatch = capture.findImage(retinaNeedle, retinaSearchOptions);
 
       if (retinaMatch) {
         return {
           match: retinaMatch,
           screenPoint: capture.toScreenPoint(retinaMatch, retinaNeedle),
           imageScale: RETINA_IMAGE_SCALE,
-          tolerance
+          tolerance: retinaSearchOptions.tolerance
         };
       }
     }

@@ -2,7 +2,7 @@
   "name": "robot",
   "version": "0.1.0",
   "private": true,
-  "description": "Single-shot CLI wrapper around robotjs for desktop automation",
+  "description": "Single-shot desktop automation with mouse, keyboard, image matching, and OCR",
   "type": "module",
   "files": [
     "bin",

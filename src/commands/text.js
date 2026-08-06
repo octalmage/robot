@@ -21,6 +21,7 @@ import {
 } from "./shared.js";
 
 const matchTypeSchema = z.enum(["exact", "startsWith", "contains"]);
+const TEXT_MATCH_RANK = { exact: 0, startsWith: 1, contains: 2 };
 
 const textBackendOptionsShape = {
   ocr: z.string().optional().describe("External OCR executable path or command"),
@@ -78,7 +79,7 @@ function normalizeText(value) {
 }
 
 function projectSubstringBounds(bounds, observationText, queryText, startIndex) {
-  if (startIndex <= 0 || observationText.length === 0 || observationText.length === queryText.length) {
+  if (startIndex < 0 || observationText.length === 0 || observationText.length === queryText.length) {
     return bounds;
   }
 
@@ -139,10 +140,8 @@ function rankTextMatches(query, ocrItems, options) {
   }
 
   matches.sort((left, right) => {
-    const rank = { exact: 0, startsWith: 1, contains: 2 };
-
-    if (rank[left.matchType] !== rank[right.matchType]) {
-      return rank[left.matchType] - rank[right.matchType];
+    if (TEXT_MATCH_RANK[left.matchType] !== TEXT_MATCH_RANK[right.matchType]) {
+      return TEXT_MATCH_RANK[left.matchType] - TEXT_MATCH_RANK[right.matchType];
     }
 
     if (left.textLength !== right.textLength) {

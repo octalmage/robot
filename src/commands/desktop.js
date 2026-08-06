@@ -81,7 +81,9 @@ export function registerDesktopCommands(cli) {
       const capture = captureWithRect(runtime.getRobot(), rect);
 
       fs.mkdirSync(path.dirname(output), { recursive: true });
-      capture.save(output);
+      if (!capture.save(output)) {
+        throw createCommandError(`Failed to save screenshot to ${output}.`, "SCREENSHOT_SAVE_FAILED");
+      }
 
       return { output, capture: getCaptureMetadata(capture) };
     }
