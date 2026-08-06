@@ -10,10 +10,22 @@ prebuilds, so npm compiles its native addon during installation; install the
 for your platform first.
 
 ```sh
-npm install --global robotcli
+npm install -g robotcli
 ```
 
-The npm package is `robotcli`; it installs the `robot` executable.
+Now run: 
+
+```
+robot screenSize
+```
+
+Assuming it installed correctly you should get something like: 
+
+```
+size:
+  width: 2240
+  height: 1260
+```
 
 ### macOS permissions
 
@@ -47,8 +59,6 @@ robot screenshot --output /tmp/robot.png
 ```
 
 Without `ROBOTJS_ENABLE_PNG=1`, the locally compiled RobotJS addon is BMP-only.
-A downloaded prebuild cannot be changed after compilation; future RobotJS
-prebuilds must themselves include PNG support.
 
 ## Usage
 
