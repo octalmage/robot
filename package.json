@@ -1,13 +1,30 @@
 {
-  "name": "robot",
+  "name": "robotcli",
   "version": "0.1.0",
-  "private": true,
   "description": "Single-shot desktop automation with mouse, keyboard, image matching, and OCR",
+  "author": "Jason Stallings",
   "type": "module",
   "files": [
     "bin",
     "src",
     "README.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/octalmage/robot.git"
+  },
+  "bugs": {
+    "url": "https://github.com/octalmage/robot/issues"
+  },
+  "homepage": "https://github.com/octalmage/robot#readme",
+  "keywords": [
+    "automation",
+    "desktop",
+    "mouse",
+    "keyboard",
+    "screenshot",
+    "ocr",
+    "cli"
   ],
   "engines": {
     "node": ">=22"
@@ -18,12 +35,10 @@
   "scripts": {
     "test": "node --test"
   },
-  "peerDependencies": {
-    "robotjs": "*"
-  },
   "dependencies": {
     "incur": "0.4.26",
     "onnxruntime-node": "^1.23.2",
-    "ppu-paddle-ocr": "^6.2.0"
+    "ppu-paddle-ocr": "^6.2.0",
+    "robotjs": "^0.9.0"
   }
 }

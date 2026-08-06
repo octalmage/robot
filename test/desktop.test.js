@@ -5,6 +5,70 @@ import os from "node:os";
 import path from "node:path";
 import { createRobot, createStream, run } from "../test-support/cli.js";
 
+test("permissions requests only missing macOS grants", async () => {
+  const stdout = createStream();
+  const calls = [];
+  const robot = createRobot({
+    getAccessibilityPermission() {
+      calls.push("getAccessibility");
+      return false;
+    },
+    requestAccessibilityPermission() {
+      calls.push("requestAccessibility");
+      return false;
+    },
+    getScreenCapturePermission() {
+      calls.push("getScreenCapture");
+      return false;
+    },
+    requestScreenCapturePermission() {
+      calls.push("requestScreenCapture");
+      return true;
+    }
+  });
+
+  const exitCode = await run(["permissions", "--request", "--json"], {
+    stdout,
+    robot,
+    platform: "darwin"
+  });
+  const result = JSON.parse(stdout.read());
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(calls, [
+    "getAccessibility",
+    "getScreenCapture",
+    "requestScreenCapture",
+    "requestAccessibility"
+  ]);
+  assert.deepEqual(result, {
+    platform: "darwin",
+    supported: true,
+    requested: true,
+    accessibility: false,
+    screenRecording: true
+  });
+});
+
+test("permissions reports unavailable controls without claiming a request", async () => {
+  const stdout = createStream();
+
+  const exitCode = await run(["permissions", "--request", "--json"], {
+    stdout,
+    robot: createRobot(),
+    platform: "darwin"
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(JSON.parse(stdout.read()), {
+    platform: "darwin",
+    supported: false,
+    requested: false,
+    accessibility: null,
+    screenRecording: null
+  });
+});
+
 test("moveMouse uses smooth movement internally", async () => {
   const stdout = createStream();
   const calls = [];

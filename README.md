@@ -2,23 +2,58 @@
 
 Single-shot desktop automation with mouse, keyboard, image matching, and OCR.
 
-## Setup
+## Installation
 
-Requires Node.js 22 or newer and a compatible `robotjs` installation. For local
-development with the sibling `robotjs` checkout:
+Requires Node.js 22 or newer. `robotjs@0.9.0` currently has no release
+prebuilds, so npm compiles its native addon during installation; install the
+[RobotJS build prerequisites](https://github.com/octalmage/robotjs#building)
+for your platform first.
 
 ```sh
-npm install
-npm link ../robotjs --no-save
-npm link
+npm install --global robotcli
 ```
 
-On macOS, grant the calling terminal Accessibility permission for input control
-and Screen Recording permission for screenshots and OCR.
+The npm package is `robotcli`; it installs the `robot` executable.
+
+### macOS permissions
+
+Use the native macOS permission prompts before the first automation command:
+
+```sh
+robot permissions --request
+```
+
+macOS still requires user approval. After approving Accessibility and Screen
+Recording, run `robot permissions` to confirm both grants.
+
+### Optional PNG support
+
+BMP loading and saving is always available. On macOS or Linux, install `libpng`
+and `pkg-config` in addition to the normal build prerequisites:
+
+```sh
+# macOS
+brew install libpng pkg-config
+
+# Debian or Ubuntu
+sudo apt-get install libpng-dev pkg-config
+```
+
+Then enable PNG while npm builds RobotJS:
+
+```sh
+ROBOTJS_ENABLE_PNG=1 npm install --global robotcli
+robot screenshot --output /tmp/robot.png
+```
+
+Without `ROBOTJS_ENABLE_PNG=1`, the locally compiled RobotJS addon is BMP-only.
+A downloaded prebuild cannot be changed after compilation; future RobotJS
+prebuilds must themselves include PNG support.
 
 ## Usage
 
 ```sh
+robot permissions
 robot screenshot --output /tmp/screen.bmp
 robot moveMouse 450 890
 robot click 450 890
@@ -125,3 +160,14 @@ robot --mcp
 
 Desktop commands load `robotjs` only when invoked. Help, schemas, manifests,
 skills, and completions do not load the native module.
+
+## Development
+
+For contributors working on this repository and the sibling `robotjs` checkout:
+
+```sh
+npm install
+npm link ../robotjs --no-save
+npm link
+npm test
+```

@@ -6,7 +6,7 @@ import { registerTextCommands } from "./commands/text.js";
 import { createRuntime } from "./runtime.js";
 
 const DESCRIPTION = "Single-shot desktop automation with mouse, keyboard, image matching, and OCR.";
-const SYNC_BODY = "macOS requires Accessibility permission for mouse/keyboard control and Screen Recording permission for capture and OCR. ROBOT_OCR_PATH selects an external OCR backend.";
+const SYNC_BODY = "On macOS, run `robot permissions --request` before desktop automation; user approval is still required. ROBOT_OCR_PATH selects an external OCR backend.";
 
 export function createCli(overrides = {}) {
   const cli = Cli.create("robot", {

@@ -26,6 +26,7 @@ function runProcess(command, args, label) {
 
 export function createRuntime(overrides = {}, environment = {}) {
   const cwd = overrides.cwd || process.cwd();
+  const platform = overrides.platform || process.platform;
   const processRunner = overrides.runProcess || runProcess;
   const now = typeof overrides.now === "function" ? overrides.now : Date.now;
   const sleep = typeof overrides.sleep === "function"
@@ -71,7 +72,7 @@ export function createRuntime(overrides = {}, environment = {}) {
   function getApplicationController() {
     if (!applicationController) {
       applicationController = overrides.applicationController || createApplicationController(
-        overrides.platform || process.platform,
+        platform,
         processRunner
       );
     }
@@ -93,6 +94,7 @@ export function createRuntime(overrides = {}, environment = {}) {
 
   return {
     cwd,
+    platform,
     now,
     sleep,
     getRobot,

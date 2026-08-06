@@ -25,6 +25,15 @@ const applicationOutput = z.object({
   target: z.string().describe("Resolved application target")
 });
 
+function getPermission(robot, method) {
+  if (typeof robot[method] !== "function") {
+    return null;
+  }
+
+  const value = robot[method]();
+  return typeof value === "boolean" ? value : null;
+}
+
 function registerApplicationCommand(cli, name, description, method) {
   cli.command(name, {
     description,
@@ -39,6 +48,54 @@ function registerApplicationCommand(cli, name, description, method) {
 }
 
 export function registerDesktopCommands(cli) {
+  cli.command("permissions", {
+    description: "Check or request macOS desktop automation permissions.",
+    options: z.object({
+      request: z.boolean().optional().describe("Show prompts for missing permissions")
+    }),
+    output: z.object({
+      platform: z.string().describe("Current operating-system platform"),
+      supported: z.boolean().describe("Whether robotjs exposes permission controls on this platform"),
+      requested: z.boolean().describe("Whether missing permissions were requested"),
+      accessibility: z.boolean().nullable().describe("Accessibility permission status"),
+      screenRecording: z.boolean().nullable().describe("Screen Recording permission status")
+    }),
+    hint: "macOS requires user approval. Rerun this command after approving to refresh the status.",
+    run(c) {
+      const runtime = c.var.runtime;
+      const robot = runtime.getRobot();
+      const shouldRequest = !!c.options.request;
+      let requested = false;
+      let accessibility = getPermission(robot, "getAccessibilityPermission");
+      let screenRecording = getPermission(robot, "getScreenCapturePermission");
+
+      if (
+        shouldRequest
+        && screenRecording === false
+        && typeof robot.requestScreenCapturePermission === "function"
+      ) {
+        requested = true;
+        screenRecording = getPermission(robot, "requestScreenCapturePermission");
+      }
+      if (
+        shouldRequest
+        && accessibility === false
+        && typeof robot.requestAccessibilityPermission === "function"
+      ) {
+        requested = true;
+        accessibility = getPermission(robot, "requestAccessibilityPermission");
+      }
+
+      return {
+        platform: runtime.platform,
+        supported: accessibility !== null && screenRecording !== null,
+        requested,
+        accessibility,
+        screenRecording
+      };
+    }
+  });
+
   registerApplicationCommand(
     cli,
     "openApp",

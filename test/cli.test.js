@@ -4,6 +4,7 @@ import { createRobot, createStream, run } from "../test-support/cli.js";
 
 test("generated root help lists public commands and integrations", async () => {
   const commands = [
+    "permissions",
     "screenshot",
     "click",
     "moveMouse",
