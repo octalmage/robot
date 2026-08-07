@@ -293,7 +293,7 @@ test("activateApp delegates an arbitrary application name to the platform", asyn
   assert.equal(result.target, "Example App");
 });
 
-test("windows returns IDs, ownership, bounds, display, and scale", async () => {
+test("windows returns metadata and filters minimized entries", async () => {
   const stdout = createStream();
   const calls = [];
   const exitCode = await run(["windows", "--json"], {
@@ -301,7 +301,16 @@ test("windows returns IDs, ownership, bounds, display, and scale", async () => {
     platform: "win32",
     runProcess(command, args, label) {
       calls.push({ command, args, label });
-      return JSON.stringify([TEST_WINDOW]);
+      return JSON.stringify([
+        TEST_WINDOW,
+        {
+          ...TEST_WINDOW,
+          id: "99",
+          title: "Snipping Tool",
+          bounds: { x: -31993, y: -32000, width: 300, height: 200 },
+          minimized: true
+        }
+      ]);
     }
   });
   const result = JSON.parse(stdout.read());
@@ -328,7 +337,10 @@ test("activateWindow resolves a title wildcard and activates its window ID", asy
 
   assert.equal(exitCode, 0);
   assert.deepEqual(calls.map((call) => call.label), ["List windows", "Activate window"]);
-  assert.equal(calls[1].args.at(-1), TEST_WINDOW.id);
+  assert.deepEqual(calls[1].args.slice(0, 3), ["-NoProfile", "-NonInteractive", "-Command"]);
+  assert.equal(calls[1].args.length, 4);
+  assert.match(calls[1].args[3], /\$handle = \[long\]::Parse\('4242'/);
+  assert.doesNotMatch(calls[1].args[3], /\$args\[0\]/);
   assert.deepEqual(result.window, TEST_WINDOW);
 });
 

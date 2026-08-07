@@ -17,6 +17,7 @@ public sealed class RobotWindowInfo
     public RobotWindowBounds bounds;
     public string display;
     public double? scale;
+    public bool minimized;
 }
 
 public sealed class RobotWindowBounds
@@ -56,6 +57,9 @@ public static class RobotWindowApi
 
     [DllImport("user32.dll")]
     private static extern bool IsWindowVisible(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsIconic(IntPtr hWnd);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);
@@ -192,7 +196,8 @@ public static class RobotWindowApi
                     height = height
                 },
                 display = GetDisplay(hWnd),
-                scale = GetScale(hWnd)
+                scale = GetScale(hWnd),
+                minimized = IsIconic(hWnd)
             });
             return true;
         }, IntPtr.Zero);
@@ -242,17 +247,29 @@ ${WINDOWS_API}
 ConvertTo-Json -InputObject @([RobotWindowApi]::List()) -Compress -Depth 4
 `;
 
-const WINDOWS_ACTIVATE_SCRIPT = String.raw`
+function createWindowsActivateScript(windowId) {
+  const value = String(windowId);
+  if (!/^-?\d+$/.test(value)) {
+    throw createCommandError(`Windows window ID must be a decimal integer: ${JSON.stringify(value)}.`, "INVALID_WINDOW_ID");
+  }
+
+  const handle = BigInt(value);
+  if (handle < -9223372036854775808n || handle > 9223372036854775807n) {
+    throw createCommandError(`Windows window ID is outside the signed 64-bit range: ${value}.`, "INVALID_WINDOW_ID");
+  }
+
+  return String.raw`
 $ErrorActionPreference = "Stop"
 Add-Type -TypeDefinition @'
 ${WINDOWS_API}
 '@
 [RobotWindowApi]::EnableDpiAwareness()
-$handle = [long]::Parse($args[0], [Globalization.CultureInfo]::InvariantCulture)
+$handle = [long]::Parse('${value}', [Globalization.CultureInfo]::InvariantCulture)
 if (-not [RobotWindowApi]::Activate($handle)) {
   throw "Windows rejected the foreground-window request for handle $handle."
 }
 `;
+}
 
 const MACOS_LIST_SCRIPT = String.raw`
 ObjC.import("AppKit");
@@ -426,7 +443,7 @@ function parseJsonWindows(output, label) {
   }
 
   const entries = Array.isArray(parsed) ? parsed : [parsed];
-  return entries.map(normalizeWindow).filter(Boolean);
+  return entries.filter((entry) => entry?.minimized !== true).map(normalizeWindow).filter(Boolean);
 }
 
 function parseLinuxWindows(output) {
@@ -575,7 +592,7 @@ export function createWindowController(platform, runner) {
       if (platform === "win32") {
         await runner(
           "powershell.exe",
-          ["-NoProfile", "-NonInteractive", "-Command", WINDOWS_ACTIVATE_SCRIPT, window.id],
+          ["-NoProfile", "-NonInteractive", "-Command", createWindowsActivateScript(window.id)],
           "Activate window"
         );
       } else if (platform === "darwin") {

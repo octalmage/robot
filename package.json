@@ -30,7 +30,7 @@
     "node": ">=22"
   },
   "bin": {
-    "robot": "./bin/robot.js"
+    "robot": "bin/robot.js"
   },
   "scripts": {
     "test": "node --test"
