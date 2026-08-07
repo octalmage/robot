@@ -1,9 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createRobot, createStream, run } from "../test-support/cli.js";
+import { createWindowController } from "../src/windows.js";
 
 const TEST_WINDOW = {
   id: "4242",
@@ -519,5 +521,30 @@ test("activateApp failure reports matching window diagnostics", async () => {
   for (const detail of ["Minecraft 1.21", "id=4242", "process=javaw", "bounds=100,200,800x600", `display=${TEST_WINDOW.display}`, "scale=1.5"]) {
     assert.ok(result.message.includes(detail), `Missing diagnostic: ${detail}`);
   }
+});
+
+test("Windows activation script resolves its native thread APIs", {
+  skip: process.platform !== "win32"
+}, async () => {
+  const controller = createWindowController("win32", (command, args, label) => {
+    const result = spawnSync(command, args, { encoding: "utf8" });
+    if (result.error) {
+      throw result.error;
+    }
+    if (result.status !== 0) {
+      throw new Error(`${label}: ${(result.stderr || result.stdout || "").trim()}`);
+    }
+    return result.stdout;
+  });
+
+  await assert.rejects(
+    controller.activate({ ...TEST_WINDOW, id: "0" }),
+    (error) => {
+      assert.equal(error.code, "WINDOW_ACTIVATION_FAILED");
+      assert.doesNotMatch(error.message, /EntryPointNotFoundException|GetCurrentThreadId.*entry point/i);
+      assert.match(error.message, /Windows rejected the foreground-window request/);
+      return true;
+    }
+  );
 });
 

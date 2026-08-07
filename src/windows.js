@@ -59,6 +59,9 @@ public static class RobotWindowApi
     private static extern bool IsWindowVisible(IntPtr hWnd);
 
     [DllImport("user32.dll")]
+    private static extern bool IsWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
     private static extern bool IsIconic(IntPtr hWnd);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
@@ -100,7 +103,7 @@ public static class RobotWindowApi
     [DllImport("user32.dll")]
     private static extern IntPtr GetForegroundWindow();
 
-    [DllImport("user32.dll")]
+    [DllImport("kernel32.dll")]
     private static extern uint GetCurrentThreadId();
 
     [DllImport("user32.dll")]
@@ -207,6 +210,10 @@ public static class RobotWindowApi
     public static bool Activate(long value)
     {
         IntPtr hWnd = new IntPtr(value);
+        if (hWnd == IntPtr.Zero || !IsWindow(hWnd))
+        {
+            return false;
+        }
         const int restore = 9;
         ShowWindowAsync(hWnd, restore);
 
