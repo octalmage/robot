@@ -1,6 +1,6 @@
 {
   "name": "getrobot",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Single-shot desktop automation with mouse, keyboard, image matching, and OCR",
   "author": "Jason Stallings",
   "type": "module",
