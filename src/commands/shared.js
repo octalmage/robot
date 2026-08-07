@@ -13,6 +13,16 @@ export const rectSchema = z.object({
   height: z.number().describe("Rectangle height")
 }).describe("Screen rectangle");
 
+export const windowSchema = z.object({
+  id: z.string().describe("Operating-system window ID"),
+  title: z.string().describe("Window title"),
+  process: z.string().nullable().describe("Owning process name"),
+  processId: z.number().int().nullable().describe("Owning process ID"),
+  bounds: rectSchema.describe("Window bounds in screen coordinates"),
+  display: z.string().nullable().describe("Containing display identifier"),
+  scale: z.number().nullable().describe("Containing display scale")
+}).describe("Desktop window");
+
 export const captureSchema = z.object({
   width: z.number().describe("Capture width in pixels"),
   height: z.number().describe("Capture height in pixels"),
@@ -41,6 +51,10 @@ export const rectangleOptionsShape = {
   y: z.number().optional().describe("Rectangle top coordinate"),
   width: z.number().optional().describe("Rectangle width"),
   height: z.number().optional().describe("Rectangle height")
+};
+
+export const windowOptionShape = {
+  window: z.string().optional().describe("Scope the command to a window ID or title")
 };
 
 export const rectangleArgsShape = {
@@ -122,6 +136,65 @@ export function resolveClickPoint(args = {}) {
   return hasX ? { x: args.x, y: args.y } : null;
 }
 
+export async function resolveWindowScope(runtime, args = {}, options = {}, settings = {}) {
+  const requestedRect = resolveRectangle(args, options);
+  if (!options.window) {
+    return { rect: requestedRect, window: null };
+  }
+
+  const controller = runtime.getWindowController();
+  const resolved = await controller.resolve(options.window);
+  const window = settings.activate ? await controller.activate(resolved) : resolved;
+  if (!requestedRect) {
+    return { rect: { ...window.bounds }, window };
+  }
+
+  if (
+    requestedRect.x < 0
+    || requestedRect.y < 0
+    || requestedRect.width <= 0
+    || requestedRect.height <= 0
+    || requestedRect.x + requestedRect.width > window.bounds.width
+    || requestedRect.y + requestedRect.height > window.bounds.height
+  ) {
+    throw createCommandError(
+      `Rectangle ${requestedRect.x},${requestedRect.y},${requestedRect.width}x${requestedRect.height} is outside window ${window.id} (${window.bounds.width}x${window.bounds.height}).`,
+      "WINDOW_RECT_OUT_OF_BOUNDS"
+    );
+  }
+
+  return {
+    rect: {
+      x: window.bounds.x + requestedRect.x,
+      y: window.bounds.y + requestedRect.y,
+      width: requestedRect.width,
+      height: requestedRect.height
+    },
+    window
+  };
+}
+
+export function resolveWindowPoint(point, window, relative = true) {
+  const bounds = window.bounds;
+  const resolved = relative
+    ? { x: bounds.x + point.x, y: bounds.y + point.y }
+    : { x: point.x, y: point.y };
+
+  if (
+    resolved.x < bounds.x
+    || resolved.y < bounds.y
+    || resolved.x >= bounds.x + bounds.width
+    || resolved.y >= bounds.y + bounds.height
+  ) {
+    throw createCommandError(
+      `Point ${point.x},${point.y} is outside window ${window.id} (${bounds.width}x${bounds.height}).`,
+      "WINDOW_POINT_OUT_OF_BOUNDS"
+    );
+  }
+
+  return resolved;
+}
+
 export function captureWithRect(robot, rect) {
   if (!rect) {
     return robot.screen.capture();
@@ -146,6 +219,24 @@ export function getCaptureMetadata(capture) {
   }
 
   return metadata;
+}
+
+export function performType(robot, text, cpm) {
+  if (!text) {
+    throw createCommandError("Text to type cannot be empty.", "INVALID_ARGUMENT");
+  }
+
+  robot.typeStringDelayed(text, cpm);
+}
+
+export function performKeyTap(robot, key, modifiers = []) {
+  if (modifiers.length === 0) {
+    robot.keyTap(key);
+  } else if (modifiers.length === 1) {
+    robot.keyTap(key, modifiers[0]);
+  } else {
+    robot.keyTap(key, modifiers);
+  }
 }
 
 export function performClick(robot, point, options = {}) {

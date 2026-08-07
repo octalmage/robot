@@ -4,6 +4,8 @@ import { createRobot, createStream, run } from "../test-support/cli.js";
 
 test("generated root help lists public commands and integrations", async () => {
   const commands = [
+    "windows",
+    "activateWindow",
     "permissions",
     "screenshot",
     "click",
@@ -16,6 +18,7 @@ test("generated root help lists public commands and integrations", async () => {
     "pixelColor",
     "openApp",
     "activateApp",
+    "sequence",
     "findImage",
     "clickImage",
     "waitForImage",
@@ -49,7 +52,7 @@ test("clickText help exposes its generated query and options", async () => {
 
   assert.equal(exitCode, 0);
   assert.match(help, /query/);
-  for (const option of ["--x", "--y", "--width", "--height", "--confidence", "--index", "--exact", "--ocr", "--rec-langs", "--ocr-strategy", "--keep-capture", "--button", "--double"]) {
+  for (const option of ["--x", "--y", "--width", "--height", "--window", "--confidence", "--index", "--exact", "--ocr", "--rec-langs", "--ocr-strategy", "--keep-capture", "--button", "--double"]) {
     assert.match(help, new RegExp(option));
   }
   assert.match(help, /A trailing integer selects the 1-based occurrence/);
@@ -62,11 +65,21 @@ test("clickText schema exposes argument option and output contracts", async () =
 
   assert.equal(exitCode, 0);
   assert.equal(schema.args.properties.query.type, "array");
-  for (const option of ["index", "keepCapture", "recLangs", "ocrStrategy", "button"]) {
+  for (const option of ["index", "window", "keepCapture", "recLangs", "ocrStrategy", "button"]) {
     assert.ok(schema.options.properties[option]);
   }
   for (const field of ["query", "matches", "capture", "button", "double"]) {
     assert.ok(schema.output.properties[field]);
+  }
+});
+
+test("capture, OCR, click, and wait commands expose window scoping", async () => {
+  for (const command of ["screenshot", "text", "findText", "click", "waitForText", "waitForImage"]) {
+    const stdout = createStream();
+    const exitCode = await run([command, "--help"], { stdout });
+
+    assert.equal(exitCode, 0);
+    assert.match(stdout.read(), /--window/);
   }
 });
 

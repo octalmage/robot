@@ -287,3 +287,72 @@ test("waitForImage stops after its local timeout", async () => {
   assert.equal(result.timedOut, true);
 });
 
+test("waitForImage searches only the selected window", async () => {
+  const stdout = createStream();
+  const events = [];
+  const window = {
+    id: "4242",
+    title: "Minecraft 1.21",
+    process: "javaw",
+    processId: 1234,
+    bounds: { x: 100, y: 200, width: 800, height: 600 },
+    display: "\\\\.\\DISPLAY1",
+    scale: 1.5
+  };
+  const robot = createRobot({
+    image: {
+      load() {
+        return { width: 10, height: 6 };
+      }
+    },
+    screen: {
+      capture(...args) {
+        events.push(["capture", ...args]);
+        return {
+          width: 800,
+          height: 600,
+          byteWidth: 3200,
+          bitsPerPixel: 32,
+          bytesPerPixel: 4,
+          screenX: 100,
+          screenY: 200,
+          scaleX: 1,
+          scaleY: 1,
+          findImage() {
+            return { x: 20, y: 30 };
+          },
+          toScreenPoint() {
+            return { x: 125, y: 233 };
+          }
+        };
+      }
+    }
+  });
+  const windowController = {
+    async resolve(reference) {
+      events.push(["resolve", reference]);
+      return window;
+    },
+    async activate(selected) {
+      events.push(["activate", selected.id]);
+      return selected;
+    }
+  };
+
+  const exitCode = await run(["waitForImage", "button.bmp", "--window", "Minecraft", "--timeout", "0", "--json"], {
+    stdout,
+    robot,
+    windowController
+  });
+  const result = JSON.parse(stdout.read());
+
+  assert.equal(exitCode, 0);
+  assert.equal(result.found, true);
+  assert.equal(result.timedOut, false);
+  assert.deepEqual(events, [
+    ["resolve", "Minecraft"],
+    ["activate", "4242"],
+    ["capture", 100, 200, 800, 600]
+  ]);
+});
+

@@ -9,11 +9,16 @@ import {
   createCommandError,
   getCaptureMetadata,
   performClick,
+  performKeyTap,
+  performType,
   rectangleArgsShape,
   rectangleOptionsShape,
   resolveClickPoint,
   resolveInputPath,
-  resolveRectangle
+  resolveWindowPoint,
+  resolveWindowScope,
+  windowOptionShape,
+  windowSchema
 } from "./shared.js";
 
 const applicationArgs = z.object({
@@ -23,6 +28,10 @@ const applicationArgs = z.object({
 const applicationOutput = z.object({
   application: z.string().describe("Requested application name"),
   target: z.string().describe("Resolved application target")
+});
+
+const windowOutput = z.object({
+  window: windowSchema.describe("Selected window")
 });
 
 function getPermission(robot, method) {
@@ -48,6 +57,46 @@ function registerApplicationCommand(cli, name, description, method) {
 }
 
 export function registerDesktopCommands(cli) {
+  cli.command("windows", {
+    description: "List visible desktop windows.",
+    output: z.object({
+      platform: z.string().describe("Current operating-system platform"),
+      windows: z.array(windowSchema).describe("Visible desktop windows")
+    }),
+    async run(c) {
+      const runtime = c.var.runtime;
+      return {
+        platform: runtime.platform,
+        windows: await runtime.getWindowController().list()
+      };
+    }
+  });
+
+  cli.command("activateWindow", {
+    description: "Bring a window to the foreground by ID or title.",
+    options: z.object({
+      id: z.string().optional().describe("Exact operating-system window ID"),
+      title: z.string().optional().describe("Window title, with optional * and ? wildcards")
+    }),
+    output: windowOutput,
+    usage: [
+      { options: { title: true } },
+      { options: { id: true } }
+    ],
+    hint: "Provide exactly one of --id or --title. Ambiguous titles must be replaced with a window ID from `robot windows`.",
+    async run(c) {
+      const hasId = !!c.options.id;
+      const hasTitle = !!c.options.title;
+      if (hasId === hasTitle) {
+        throw createCommandError("activateWindow expects exactly one of --id or --title.", "INVALID_ARGUMENT");
+      }
+
+      const controller = c.var.runtime.getWindowController();
+      const mode = hasId ? "id" : "title";
+      return { window: await controller.activate(c.options.id || c.options.title, mode) };
+    }
+  });
+
   cli.command("permissions", {
     description: "Check or request macOS desktop automation permissions.",
     options: z.object({
@@ -112,7 +161,8 @@ export function registerDesktopCommands(cli) {
   const screenshotArgs = z.object(rectangleArgsShape);
   const screenshotOptions = z.object({
     output: z.string().describe("Destination image path"),
-    ...rectangleOptionsShape
+    ...rectangleOptionsShape,
+    ...windowOptionShape
   });
 
   cli.command("screenshot", {
@@ -131,9 +181,9 @@ export function registerDesktopCommands(cli) {
       }
     ],
     hint: "Use either four positional rectangle values or all four named rectangle options, not both.",
-    run(c) {
+    async run(c) {
       const runtime = c.var.runtime;
-      const rect = resolveRectangle(c.args, c.options);
+      const { rect } = await resolveWindowScope(runtime, c.args, c.options, { activate: true });
       const output = resolveInputPath(runtime.cwd, c.options.output, "output path");
       const capture = captureWithRect(runtime.getRobot(), rect);
 
@@ -165,10 +215,10 @@ export function registerDesktopCommands(cli) {
   cli.command("click", {
     description: "Click the current pointer position or the given screen coordinates.",
     args: z.object({
-      x: z.coerce.number().optional().describe("Horizontal screen coordinate"),
-      y: z.coerce.number().optional().describe("Vertical screen coordinate")
+      x: z.coerce.number().optional().describe("Horizontal coordinate, window-relative with --window"),
+      y: z.coerce.number().optional().describe("Vertical coordinate, window-relative with --window")
     }),
-    options: z.object(clickOptionsShape),
+    options: z.object({ ...clickOptionsShape, ...windowOptionShape }),
     output: z.object({
       x: z.number().optional().describe("Clicked horizontal coordinate"),
       y: z.number().optional().describe("Clicked vertical coordinate"),
@@ -179,14 +229,23 @@ export function registerDesktopCommands(cli) {
       {},
       { args: { x: true, y: true } }
     ],
-    run(c) {
-      const point = resolveClickPoint(c.args);
+    async run(c) {
+      const runtime = c.var.runtime;
+      const robot = runtime.getRobot();
+      const requestedPoint = resolveClickPoint(c.args);
+      let point = requestedPoint;
       const result = {
         button: c.options.button || "left",
         double: !!c.options.double
       };
 
-      performClick(c.var.runtime.getRobot(), point, c.options);
+      if (c.options.window) {
+        const scope = await resolveWindowScope(runtime, {}, c.options, { activate: true });
+        const currentPoint = requestedPoint ? null : robot.getMousePos();
+        point = resolveWindowPoint(requestedPoint || currentPoint, scope.window, !!requestedPoint);
+      }
+
+      performClick(robot, requestedPoint ? point : null, c.options);
 
       if (point) {
         result.x = point.x;
@@ -209,12 +268,7 @@ export function registerDesktopCommands(cli) {
     }),
     run(c) {
       const text = c.args.text.join(" ");
-
-      if (!text) {
-        throw createCommandError("Text to type cannot be empty.", "INVALID_ARGUMENT");
-      }
-
-      c.var.runtime.getRobot().typeStringDelayed(text, c.options.cpm);
+      performType(c.var.runtime.getRobot(), text, c.options.cpm);
       return { text, cpm: c.options.cpm };
     }
   });
@@ -230,17 +284,8 @@ export function registerDesktopCommands(cli) {
       modifiers: z.array(z.string()).describe("Applied modifier keys")
     }),
     run(c) {
-      const robot = c.var.runtime.getRobot();
       const modifiers = c.args.modifiers || [];
-
-      if (modifiers.length === 0) {
-        robot.keyTap(c.args.key);
-      } else if (modifiers.length === 1) {
-        robot.keyTap(c.args.key, modifiers[0]);
-      } else {
-        robot.keyTap(c.args.key, modifiers);
-      }
-
+      performKeyTap(c.var.runtime.getRobot(), c.args.key, modifiers);
       return { key: c.args.key, modifiers };
     }
   });

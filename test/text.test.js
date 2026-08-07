@@ -544,3 +544,65 @@ test("a quoted query ending in a number remains part of the text", async () => {
   assert.equal(result.selectedIndex, 1);
 });
 
+test("waitForText searches only the selected window", async () => {
+  const stdout = createStream();
+  const events = [];
+  const window = {
+    id: "4242",
+    title: "Minecraft 1.21",
+    process: "javaw",
+    processId: 1234,
+    bounds: { x: 100, y: 200, width: 800, height: 600 },
+    display: "\\\\.\\DISPLAY1",
+    scale: 1.5
+  };
+  const robot = createRobot({
+    screen: {
+      capture(...args) {
+        events.push(["capture", ...args]);
+        return createTextCapture({
+          width: 800,
+          height: 600,
+          screenX: 100,
+          screenY: 200
+        });
+      }
+    }
+  });
+  const windowController = {
+    async resolve(reference) {
+      events.push(["resolve", reference]);
+      return window;
+    },
+    async activate(selected) {
+      events.push(["activate", selected.id]);
+      return selected;
+    }
+  };
+
+  const exitCode = await run(["waitForText", "cycle complete", "--window", "Minecraft", "--timeout", "0", "--json"], {
+    stdout,
+    robot,
+    windowController,
+    ocrBackend: {
+      async recognize() {
+        return [{
+          text: "cycle complete",
+          confidence: 1,
+          bounds: { x: 10, y: 10, width: 100, height: 20 }
+        }];
+      }
+    }
+  });
+  const result = JSON.parse(stdout.read());
+
+  assert.equal(exitCode, 0);
+  assert.equal(result.found, true);
+  assert.equal(result.timedOut, false);
+  assert.deepEqual(events, [
+    ["resolve", "Minecraft"],
+    ["activate", "4242"],
+    ["capture", 100, 200, 800, 600]
+  ]);
+});
+

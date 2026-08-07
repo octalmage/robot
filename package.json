@@ -39,6 +39,6 @@
     "incur": "0.4.26",
     "onnxruntime-node": "^1.23.2",
     "ppu-paddle-ocr": "^6.2.0",
-    "robotjs": "^0.9.0"
+    "robotjs": "^0.9.1"
   }
 }

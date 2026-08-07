@@ -14,10 +14,11 @@ import {
   pointSchema,
   rectangleOptionsShape,
   rectSchema,
-  resolveRectangle,
+  resolveWindowScope,
   timeoutSchema,
   waitForObservation,
-  waitMetadataShape
+  waitMetadataShape,
+  windowOptionShape
 } from "./shared.js";
 
 const matchTypeSchema = z.enum(["exact", "startsWith", "contains"]);
@@ -33,6 +34,7 @@ const textBackendOptionsShape = {
 
 const textMatchOptions = z.object({
   ...rectangleOptionsShape,
+  ...windowOptionShape,
   confidence: z.number().default(0).describe("Minimum OCR confidence"),
   index: indexSchema,
   exact: z.boolean().optional().describe("Require an exact text match"),
@@ -375,7 +377,7 @@ function createTextMatchCommand({ description, click = false, wait = false }) {
       const robot = runtime.getRobot();
       const resolved = resolveTextQuery(c.args.query, c.options.index, click);
       const searchOptions = { ...c.options, index: resolved.index };
-      const rect = resolveRectangle({}, searchOptions);
+      const { rect } = await resolveWindowScope(runtime, {}, searchOptions, { activate: true });
       let textResult;
       let waitResult;
 
@@ -420,7 +422,7 @@ function createTextMatchCommand({ description, click = false, wait = false }) {
 export function registerTextCommands(cli) {
   cli.command("text", {
     description: "Recognize text across the current displays.",
-    options: z.object(textBackendOptionsShape),
+    options: z.object({ ...textBackendOptionsShape, ...windowOptionShape }),
     output: z.object({
       displays: z.array(z.object({
         displayId: z.number().int().describe("One-based display index"),
@@ -435,7 +437,8 @@ export function registerTextCommands(cli) {
     async run(c) {
       const runtime = c.var.runtime;
       const robot = runtime.getRobot();
-      const searchRects = getTextSearchRects(robot, null);
+      const { rect } = await resolveWindowScope(runtime, {}, c.options, { activate: true });
+      const searchRects = getTextSearchRects(robot, rect);
       const displays = [];
       const allText = [];
 

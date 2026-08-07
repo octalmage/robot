@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { createApplicationController } from "./applications.js";
 import { createExternalBackend, createPaddleBackend } from "./ocr.js";
+import { createWindowController } from "./windows.js";
 import { createCommandError, resolveExecutablePath } from "./commands/shared.js";
 
 const requireRobot = createRequire(import.meta.url);
@@ -37,6 +38,7 @@ export function createRuntime(overrides = {}, environment = {}) {
   let activeOcrBackend;
   let ownsOcrBackend = false;
   let applicationController;
+  let windowController;
 
   function getRobot() {
     if (!robotLoaded) {
@@ -69,11 +71,20 @@ export function createRuntime(overrides = {}, environment = {}) {
     return activeOcrBackend;
   }
 
+  function getWindowController() {
+    if (!windowController) {
+      windowController = overrides.windowController || createWindowController(platform, processRunner);
+    }
+
+    return windowController;
+  }
+
   function getApplicationController() {
     if (!applicationController) {
       applicationController = overrides.applicationController || createApplicationController(
         platform,
-        processRunner
+        processRunner,
+        getWindowController()
       );
     }
 
@@ -100,6 +111,7 @@ export function createRuntime(overrides = {}, environment = {}) {
     getRobot,
     getOcrBackend,
     getApplicationController,
+    getWindowController,
     dispose
   };
 }

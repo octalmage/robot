@@ -3,6 +3,7 @@ import packageJson from "../package.json" with { type: "json" };
 import { registerDesktopCommands } from "./commands/desktop.js";
 import { registerImageCommands } from "./commands/image.js";
 import { registerTextCommands } from "./commands/text.js";
+import { registerSequenceCommand } from "./commands/sequence.js";
 import { createRuntime } from "./runtime.js";
 
 const DESCRIPTION = "Single-shot desktop automation with mouse, keyboard, image matching, and OCR.";
@@ -60,6 +61,7 @@ export function createCli(overrides = {}) {
   registerDesktopCommands(cli);
   registerImageCommands(cli);
   registerTextCommands(cli);
+  registerSequenceCommand(cli);
   return cli;
 }
 

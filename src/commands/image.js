@@ -8,10 +8,11 @@ import {
   pointSchema,
   rectangleOptionsShape,
   resolveInputPath,
-  resolveRectangle,
+  resolveWindowScope,
   timeoutSchema,
   waitForObservation,
-  waitMetadataShape
+  waitMetadataShape,
+  windowOptionShape
 } from "./shared.js";
 
 const RETINA_IMAGE_SCALE = 0.5;
@@ -23,6 +24,7 @@ const imageArgs = z.object({
 
 const imageOptions = z.object({
   ...rectangleOptionsShape,
+  ...windowOptionShape,
   tolerance: z.number().optional().describe("Image matching tolerance")
 });
 
@@ -169,7 +171,7 @@ function createImageCommand({ description, click = false, wait = false }) {
       const runtime = c.var.runtime;
       const robot = runtime.getRobot();
       const image = resolveInputPath(runtime.cwd, c.args.image, "image path");
-      const rect = resolveRectangle({}, c.options);
+      const { rect } = await resolveWindowScope(runtime, {}, c.options, { activate: true });
       const needle = robot.image.load(image);
       const searchOptions = c.options.tolerance === undefined
         ? {}
