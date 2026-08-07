@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { z } from "incur";
+import { saveManagedCapture } from "../captures.js";
 import {
   captureSchema,
   captureWithRect,
@@ -160,7 +162,9 @@ export function registerDesktopCommands(cli) {
 
   const screenshotArgs = z.object(rectangleArgsShape);
   const screenshotOptions = z.object({
-    output: z.string().describe("Destination image path"),
+    output: z.string().optional().describe("Destination image path"),
+    temp: z.boolean().optional().describe("Save to managed temporary storage"),
+    tempTtl: z.number().min(0).optional().describe("Delete older managed captures after this many milliseconds"),
     ...rectangleOptionsShape,
     ...windowOptionShape
   });
@@ -171,28 +175,58 @@ export function registerDesktopCommands(cli) {
     options: screenshotOptions,
     output: z.object({
       output: z.string().describe("Resolved destination image path"),
+      imageUri: z.string().describe("File URI for the saved image"),
+      latest: z.string().optional().describe("Session-scoped latest capture path"),
+      managed: z.boolean().describe("Whether managed temporary storage was used"),
       capture: captureSchema.describe("Saved capture metadata")
     }),
     usage: [
       { options: { output: true } },
+      { options: { temp: true } },
       {
         args: { x: true, y: true, width: true, height: true },
         options: { output: true }
       }
     ],
-    hint: "Use either four positional rectangle values or all four named rectangle options, not both.",
+    hint: "Choose exactly one of --output or --temp. Use either four positional rectangle values or all four named rectangle options, not both.",
     async run(c) {
       const runtime = c.var.runtime;
-      const { rect } = await resolveWindowScope(runtime, c.args, c.options, { activate: true });
-      const output = resolveInputPath(runtime.cwd, c.options.output, "output path");
-      const capture = captureWithRect(runtime.getRobot(), rect);
-
-      fs.mkdirSync(path.dirname(output), { recursive: true });
-      if (!capture.save(output)) {
-        throw createCommandError(`Failed to save screenshot to ${output}.`, "SCREENSHOT_SAVE_FAILED");
+      const managed = c.options.temp === true;
+      if ((c.options.output !== undefined) === managed) {
+        throw createCommandError("Choose exactly one of --output or --temp.", "INVALID_ARGUMENT");
+      }
+      if (!managed && c.options.tempTtl !== undefined) {
+        throw createCommandError("--temp-ttl requires --temp.", "INVALID_ARGUMENT");
       }
 
-      return { output, capture: getCaptureMetadata(capture) };
+      const { rect } = await resolveWindowScope(runtime, c.args, c.options, { activate: true });
+      let capture;
+      let output;
+      let latest;
+
+      if (managed) {
+        ({ capture, output, latest } = saveManagedCapture(
+          runtime,
+          runtime.getRobot(),
+          rect,
+          { ttlMs: c.options.tempTtl }
+        ));
+      } else {
+        output = resolveInputPath(runtime.cwd, c.options.output, "output path");
+        capture = captureWithRect(runtime.getRobot(), rect);
+        fs.mkdirSync(path.dirname(output), { recursive: true });
+        if (!capture.save(output)) {
+          throw createCommandError(`Failed to save screenshot to ${output}.`, "SCREENSHOT_SAVE_FAILED");
+        }
+      }
+
+      return {
+        output,
+        imageUri: pathToFileURL(output).href,
+        latest,
+        managed,
+        capture: getCaptureMetadata(capture)
+      };
     }
   });
 
@@ -261,14 +295,18 @@ export function registerDesktopCommands(cli) {
     args: z.object({
       text: z.array(z.string()).describe("Text words to type")
     }),
-    options: z.object({ cpm: cpmSchema }),
+    options: z.object({ cpm: cpmSchema, ...windowOptionShape }),
     output: z.object({
       text: z.string().describe("Typed text"),
       cpm: z.number().describe("Typing speed in characters per minute")
     }),
-    run(c) {
+    async run(c) {
+      const runtime = c.var.runtime;
+      if (c.options.window) {
+        await resolveWindowScope(runtime, {}, c.options, { activate: true });
+      }
       const text = c.args.text.join(" ");
-      performType(c.var.runtime.getRobot(), text, c.options.cpm);
+      performType(runtime.getRobot(), text, c.options.cpm);
       return { text, cpm: c.options.cpm };
     }
   });
@@ -279,13 +317,18 @@ export function registerDesktopCommands(cli) {
       key: z.string().describe("Key to press"),
       modifiers: z.array(z.string()).optional().describe("Modifier keys")
     }),
+    options: z.object(windowOptionShape),
     output: z.object({
       key: z.string().describe("Pressed key"),
       modifiers: z.array(z.string()).describe("Applied modifier keys")
     }),
-    run(c) {
+    async run(c) {
+      const runtime = c.var.runtime;
+      if (c.options.window) {
+        await resolveWindowScope(runtime, {}, c.options, { activate: true });
+      }
       const modifiers = c.args.modifiers || [];
-      performKeyTap(c.var.runtime.getRobot(), c.args.key, modifiers);
+      performKeyTap(runtime.getRobot(), c.args.key, modifiers);
       return { key: c.args.key, modifiers };
     }
   });

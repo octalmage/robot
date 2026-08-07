@@ -1,5 +1,7 @@
 import fs from "node:fs";
 import { z } from "incur";
+import { saveManagedCapture } from "../captures.js";
+import { observeText, textBackendOptionsShape } from "./text.js";
 import {
   clickOptionsShape,
   cpmSchema,
@@ -10,6 +12,8 @@ import {
   resolveClickPoint,
   resolveInputPath,
   resolveWindowPoint,
+  timeoutSchema,
+  waitForObservation,
   windowSchema
 } from "./shared.js";
 
@@ -32,13 +36,37 @@ const clickStepSchema = z.object({
   ...clickOptionsShape
 });
 
-const sequenceStepsSchema = z.array(
-  z.discriminatedUnion("command", [keyTapStepSchema, typeStepSchema, clickStepSchema])
+const textStepOptionsShape = {
+  query: z.string().min(1).describe("Text to find"),
+  confidence: z.number().default(0).describe("Minimum OCR confidence"),
+  exact: z.boolean().optional().describe("Require an exact text match"),
+  ...textBackendOptionsShape
+};
+
+const assertTextStepSchema = z.object({
+  command: z.literal("assertText"),
+  ...textStepOptionsShape
+});
+
+const waitForTextStepSchema = z.object({
+  command: z.literal("waitForText"),
+  ...textStepOptionsShape,
+  timeout: timeoutSchema
+});
+
+export const sequenceStepsSchema = z.array(
+  z.discriminatedUnion("command", [
+    keyTapStepSchema,
+    typeStepSchema,
+    clickStepSchema,
+    assertTextStepSchema,
+    waitForTextStepSchema
+  ])
 ).min(1);
 
 const sequenceResultSchema = z.object({
   index: z.number().int().describe("One-based step index"),
-  command: z.enum(["keyTap", "type", "click"]).describe("Executed command"),
+  command: z.enum(["keyTap", "type", "click", "assertText", "waitForText"]).describe("Executed command"),
   key: z.string().optional().describe("Pressed key"),
   modifiers: z.array(z.string()).optional().describe("Applied modifier keys"),
   text: z.string().optional().describe("Typed text"),
@@ -46,30 +74,30 @@ const sequenceResultSchema = z.object({
   x: z.number().optional().describe("Clicked horizontal screen coordinate"),
   y: z.number().optional().describe("Clicked vertical screen coordinate"),
   button: z.enum(["left", "middle", "right"]).optional().describe("Mouse button used"),
-  double: z.boolean().optional().describe("Whether a double-click was used")
+  double: z.boolean().optional().describe("Whether a double-click was used"),
+  query: z.string().optional().describe("Asserted or awaited text"),
+  found: z.boolean().optional().describe("Whether matching text was found"),
+  matchedText: z.string().nullable().optional().describe("Matched OCR text"),
+  confidence: z.number().nullable().optional().describe("Matched OCR confidence"),
+  candidateCount: z.number().int().optional().describe("Number of matching OCR candidates"),
+  attempts: z.number().int().optional().describe("Number of wait observations"),
+  elapsedMs: z.number().optional().describe("Elapsed wait time")
 });
 
-function readSteps(input) {
-  let parsed;
-  try {
-    parsed = JSON.parse(fs.readFileSync(input, "utf8"));
-  } catch (error) {
-    throw createCommandError(`Failed to read sequence steps from ${input}: ${error.message}`, "SEQUENCE_READ_FAILED");
-  }
-
+function validateSteps(parsed, source) {
   const validation = sequenceStepsSchema.safeParse(parsed);
   if (!validation.success) {
     const details = validation.error.issues
       .map((issue) => `${issue.path.join(".") || "steps"}: ${issue.message}`)
       .join("; ");
-    throw createCommandError(`Invalid sequence steps in ${input}: ${details}`, "INVALID_SEQUENCE");
+    throw createCommandError(`Invalid sequence steps in ${source}: ${details}`, "INVALID_SEQUENCE");
   }
 
   for (let index = 0; index < validation.data.length; index += 1) {
     const step = validation.data[index];
     if (step.command === "click" && (step.x === undefined) !== (step.y === undefined)) {
       throw createCommandError(
-        `Invalid sequence steps in ${input}: ${index}.click expects neither coordinate or both x and y.`,
+        `Invalid sequence steps in ${source}: ${index}.click expects neither coordinate or both x and y.`,
         "INVALID_SEQUENCE"
       );
     }
@@ -78,7 +106,68 @@ function readSteps(input) {
   return validation.data;
 }
 
-function executeStep(robot, step, window, index) {
+function parseSteps(serialized, source) {
+  let parsed;
+  try {
+    parsed = JSON.parse(serialized);
+  } catch (error) {
+    throw createCommandError(`Failed to parse sequence steps from ${source}: ${error.message}`, "SEQUENCE_READ_FAILED");
+  }
+
+  return validateSteps(parsed, source);
+}
+
+function resolveSteps(runtime, options) {
+  const sources = Number(options.steps !== undefined) + Number(options.stepsJson !== undefined);
+  if (sources !== 1) {
+    throw createCommandError("Choose exactly one of --steps or --steps-json.", "INVALID_ARGUMENT");
+  }
+
+  if (Array.isArray(options.steps)) {
+    return { source: "inline MCP steps", steps: validateSteps(options.steps, "inline MCP steps") };
+  }
+
+  if (options.stepsJson !== undefined) {
+    return { source: "--steps-json", steps: parseSteps(options.stepsJson, "--steps-json") };
+  }
+
+  if (options.steps === "-") {
+    let serialized;
+    try {
+      serialized = runtime.readStdin();
+    } catch (error) {
+      throw createCommandError(`Failed to read sequence steps from stdin: ${error.message}`, "SEQUENCE_READ_FAILED");
+    }
+    return { source: "stdin", steps: parseSteps(serialized, "stdin") };
+  }
+
+  const input = resolveInputPath(runtime.cwd, options.steps, "steps path");
+  let serialized;
+  try {
+    serialized = fs.readFileSync(input, "utf8");
+  } catch (error) {
+    throw createCommandError(`Failed to read sequence steps from ${input}: ${error.message}`, "SEQUENCE_READ_FAILED");
+  }
+  return { source: input, steps: parseSteps(serialized, input) };
+}
+
+function summarizeTextStep(index, command, query, result, waitResult) {
+  return {
+    index,
+    command,
+    query,
+    found: result.found,
+    matchedText: result.text,
+    confidence: result.confidence,
+    candidateCount: result.candidateCount,
+    ...(waitResult ? {
+      attempts: waitResult.attempts,
+      elapsedMs: waitResult.elapsedMs
+    } : {})
+  };
+}
+
+async function executeStep(runtime, robot, step, window, index) {
   if (step.command === "keyTap") {
     const modifiers = step.modifiers || [];
     performKeyTap(robot, step.key, modifiers);
@@ -91,55 +180,105 @@ function executeStep(robot, step, window, index) {
     return { index, command: step.command, text: step.text, cpm };
   }
 
-  const requestedPoint = resolveClickPoint(step);
-  const currentPoint = requestedPoint ? null : robot.getMousePos();
-  const point = resolveWindowPoint(requestedPoint || currentPoint, window, !!requestedPoint);
-  performClick(robot, requestedPoint ? point : null, step);
-  return {
-    index,
-    command: step.command,
-    x: point.x,
-    y: point.y,
-    button: step.button || "left",
-    double: !!step.double
-  };
+  if (step.command === "click") {
+    const requestedPoint = resolveClickPoint(step);
+    const currentPoint = requestedPoint ? null : robot.getMousePos();
+    const point = resolveWindowPoint(requestedPoint || currentPoint, window, !!requestedPoint);
+    performClick(robot, requestedPoint ? point : null, step);
+    return {
+      index,
+      command: step.command,
+      x: point.x,
+      y: point.y,
+      button: step.button || "left",
+      double: !!step.double
+    };
+  }
+
+  if (step.command === "assertText") {
+    const result = await observeText(runtime, step.query, window.bounds, step);
+    if (!result.found) {
+      throw createCommandError(`Text assertion failed: ${JSON.stringify(step.query)} was not found.`, "SEQUENCE_ASSERTION_FAILED");
+    }
+    return summarizeTextStep(index, step.command, step.query, result);
+  }
+
+  const waitResult = await waitForObservation(
+    () => observeText(runtime, step.query, window.bounds, step),
+    (result) => result.found,
+    step,
+    runtime
+  );
+  if (waitResult.timedOut) {
+    throw createCommandError(
+      `Timed out after ${waitResult.elapsedMs} ms waiting for text ${JSON.stringify(step.query)}.`,
+      "SEQUENCE_WAIT_TIMEOUT"
+    );
+  }
+  return summarizeTextStep(index, step.command, step.query, waitResult.value, waitResult);
 }
 
 export function registerSequenceCommand(cli) {
   cli.command("sequence", {
-    description: "Run keyboard and mouse steps in one focused process.",
+    description: "Run input and text-verification steps in one focused process.",
     options: z.object({
       window: z.string().describe("Target window ID or title"),
-      steps: z.string().describe("JSON file containing an array of steps")
+      steps: z.union([z.string(), sequenceStepsSchema]).optional()
+        .describe("JSON file, '-' for stdin, or an MCP array of steps"),
+      stepsJson: z.string().optional().describe("Inline JSON array of steps"),
+      captureOnFailure: z.boolean().optional().describe("Save a managed window capture when a step fails")
     }),
     output: z.object({
       window: windowSchema.describe("Activated target window"),
-      steps: z.string().describe("Resolved sequence file path"),
+      steps: z.string().describe("Resolved sequence source"),
       completed: z.number().int().describe("Number of completed steps"),
       results: z.array(sequenceResultSchema).describe("Step results in execution order")
     }),
-    hint: "Coordinates in click steps are relative to the selected window. Supported commands are keyTap, type, and click.",
+    usage: [
+      { options: { window: true, steps: true } },
+      { options: { window: true, "steps-json": true } }
+    ],
+    hint: "Click coordinates are window-relative. Steps support keyTap, type, click, assertText, and waitForText.",
     async run(c) {
       const runtime = c.var.runtime;
-      const input = resolveInputPath(runtime.cwd, c.options.steps, "steps path");
-      const steps = readSteps(input);
+      const resolved = resolveSteps(runtime, c.options);
       const controller = runtime.getWindowController();
       const target = await controller.resolve(c.options.window);
       const window = await controller.activate(target);
       const robot = runtime.getRobot();
       const results = [];
 
-      for (let offset = 0; offset < steps.length; offset += 1) {
-        const step = steps[offset];
+      for (let offset = 0; offset < resolved.steps.length; offset += 1) {
+        const step = resolved.steps[offset];
         try {
-          results.push(executeStep(robot, step, window, offset + 1));
+          results.push(await executeStep(runtime, robot, step, window, offset + 1));
         } catch (error) {
-          error.message = `Sequence step ${offset + 1} (${step.command}) failed: ${error.message}`;
-          throw error;
+          let captureMessage = "";
+          if (c.options.captureOnFailure) {
+            try {
+              const capture = saveManagedCapture(runtime, robot, window.bounds, { prefix: "failure" });
+              captureMessage = ` Failure capture: ${capture.output}. Latest capture: ${capture.latest}.`;
+            } catch (captureError) {
+              captureMessage = ` Failure capture also failed: ${captureError.message}.`;
+            }
+          }
+
+          const wrapped = createCommandError(
+            `Sequence step ${offset + 1} (${step.command}) failed: ${error.message}${captureMessage}`,
+            error.code || "SEQUENCE_STEP_FAILED",
+            error.exitCode || 1
+          );
+          wrapped.cause = error;
+          throw wrapped;
         }
       }
 
-      return { window, steps: input, completed: results.length, results };
+      return {
+        window,
+        steps: resolved.source,
+        completed: results.length,
+        results
+      };
     }
   });
 

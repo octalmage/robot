@@ -24,7 +24,7 @@ import {
 const matchTypeSchema = z.enum(["exact", "startsWith", "contains"]);
 const TEXT_MATCH_RANK = { exact: 0, startsWith: 1, contains: 2 };
 
-const textBackendOptionsShape = {
+export const textBackendOptionsShape = {
   ocr: z.string().optional().describe("External OCR executable path or command"),
   recLangs: z.string().optional().describe("OCR recognition languages"),
   ocrStrategy: z.enum(["per-box", "per-line", "cross-line"])
@@ -300,6 +300,22 @@ async function collectTextMatch(robot, query, rect, options, runtime) {
     candidateCount: instances.length
   };
 }
+export async function observeText(runtime, query, rect, options = {}) {
+  const searchOptions = {
+    ...options,
+    confidence: options.confidence ?? 0,
+    index: options.index ?? 1,
+    ocrStrategy: options.ocrStrategy ?? "per-box",
+    keepCapture: false
+  };
+  const result = await collectTextMatch(runtime.getRobot(), query, rect, searchOptions, runtime);
+
+  try {
+    return buildTextResult(query, result, searchOptions);
+  } finally {
+    disposeTextCapture(result);
+  }
+}
 
 function resolveTextQuery(parts, index, supportsTrailingIndex) {
   const queryParts = [...parts];
@@ -422,7 +438,7 @@ function createTextMatchCommand({ description, click = false, wait = false }) {
 export function registerTextCommands(cli) {
   cli.command("text", {
     description: "Recognize text across the current displays.",
-    options: z.object({ ...textBackendOptionsShape, ...windowOptionShape }),
+    options: z.object({ ...textBackendOptionsShape, ...windowOptionShape, keepCapture: z.boolean().optional().describe("Keep each OCR capture") }),
     output: z.object({
       displays: z.array(z.object({
         displayId: z.number().int().describe("One-based display index"),
@@ -430,7 +446,8 @@ export function registerTextCommands(cli) {
         screenY: z.number().describe("Display top screen coordinate"),
         width: z.number().describe("Display capture width"),
         height: z.number().describe("Display capture height"),
-        text: z.array(z.string()).describe("Recognized display text")
+        text: z.array(z.string()).describe("Recognized display text"),
+        captureImagePath: z.string().optional().describe("Retained OCR capture path")
       })).describe("Per-display OCR results"),
       allText: z.array(z.string()).describe("Recognized text across all displays")
     }),
@@ -445,6 +462,7 @@ export function registerTextCommands(cli) {
       for (let displayIndex = 0; displayIndex < searchRects.length; displayIndex += 1) {
         const capture = captureWithRect(robot, searchRects[displayIndex]);
         const captureTempDir = fs.mkdtempSync(path.join(os.tmpdir(), "robot-ocr-"));
+        let retained = false;
 
         try {
           const captureInput = saveCaptureForOcr(capture, captureTempDir);
@@ -452,18 +470,26 @@ export function registerTextCommands(cli) {
           const text = ocrItems
             .map((item) => item.text)
             .filter((value) => typeof value === "string" && value.length > 0);
-
-          displays.push({
+          const display = {
             displayId: displayIndex + 1,
             screenX: capture.screenX || 0,
             screenY: capture.screenY || 0,
             width: capture.width,
             height: capture.height,
             text
-          });
+          };
+
+          if (c.options.keepCapture) {
+            display.captureImagePath = captureInput.imagePath;
+            retained = true;
+          }
+
+          displays.push(display);
           allText.push(...text);
         } finally {
-          fs.rmSync(captureTempDir, { recursive: true, force: true });
+          if (!retained) {
+            fs.rmSync(captureTempDir, { recursive: true, force: true });
+          }
         }
       }
 

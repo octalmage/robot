@@ -51,11 +51,12 @@ robot permissions
 robot windows
 robot activateWindow --title "Minecraft*"
 robot screenshot --window Minecraft --output /tmp/minecraft.png
+robot screenshot --window Minecraft --temp
 robot screenshot --output /tmp/screen.bmp
 robot moveMouse 450 890
 robot click 450 890
-robot type "hello world"
-robot keyTap a command
+robot type stick --window Minecraft
+robot keyTap enter --window Minecraft
 robot scrollMouse 0 -5
 robot mousePos
 robot screenSize
@@ -64,12 +65,13 @@ robot pixelColor 450 890
 robot openApp "Example App"
 robot activateApp "Example App"
 robot sequence --window Minecraft --steps steps.json
+robot sequence --window Minecraft --steps-json '[{"command":"type","text":"32"}]'
 
 robot findImage ./assets/button.bmp --tolerance 0.1
 robot clickImage ./assets/button.bmp --tolerance 0.1
 robot waitForImage ./assets/button.bmp --timeout 30000
 
-robot text
+robot text --keep-capture
 robot findText "Message General"
 robot clickText "Message General" 2
 robot clickWord "continue" --index 2
@@ -92,25 +94,44 @@ processes, bounds, displays, and display scales. `activateWindow` accepts
 include matching window diagnostics instead of only the operating-system
 process error.
 
-Use `--window <id-or-title>` on `screenshot`, `click`, image commands, and text
-commands to activate and constrain the operation to that window. Rectangle and
-click coordinates are window-relative when `--window` is present. This keeps
-wait commands from matching the same text or image in another application.
+Use `--window <id-or-title>` on `screenshot`, `click`, `type`, `keyTap`, image
+commands, and text commands to activate the selected window before operating.
+Capture operations are constrained to that window, and rectangle and click
+coordinates are window-relative. This keeps wait commands from matching the
+same text or image in another application.
 
-`sequence` validates a top-level JSON array, focuses its target once, then runs
-`keyTap`, `type`, and `click` steps in the same process:
+`sequence` focuses its target once, then runs input and OCR verification steps
+in the same process:
 
 ```json
 [
   { "command": "keyTap", "key": "t" },
   { "command": "type", "text": "cycle complete", "cpm": 12000 },
-  { "command": "click", "x": 100, "y": 50, "button": "left" }
+  { "command": "assertText", "query": "cycle complete", "exact": true },
+  { "command": "click", "x": 100, "y": 50, "button": "left" },
+  { "command": "waitForText", "query": "Ready", "timeout": 30000 }
 ]
 ```
 
+Pass the array by file, inline JSON, stdin, or directly as the MCP `steps`
+array:
+
 ```sh
 robot sequence --window Minecraft --steps steps.json
+robot sequence --window Minecraft --steps-json '[{"command":"keyTap","key":"enter"}]'
+printf '%s' '[{"command":"type","text":"32"}]' | robot sequence --window Minecraft --steps -
 ```
+
+`--capture-on-failure` retains a managed screenshot of the selected window
+when any input, assertion, or wait step fails.
+
+## Managed captures
+
+`robot screenshot --temp` creates a PNG without requiring an output path. Its
+result includes the generated `output`, a `file:` `imageUri`, and a stable
+working-directory-scoped `latest` path. MCP clients receive those fields in
+structured output. Captures are not deleted by default; `--temp-ttl <ms>`
+removes expired captures the next time a managed capture is created.
 
 ## Image and text targeting
 
@@ -145,6 +166,9 @@ Paddle OCR defaults to `--ocr-strategy per-box`, which works well for compact
 UI labels. `per-line` is intended for lines of prose, and `cross-line` batches
 multiple lines. `--confidence` sets the minimum accepted recognition
 confidence.
+
+`robot text --keep-capture` adds `captureImagePath` to each display result and
+leaves that OCR input on disk for inspection.
 
 ## OCR models and external backends
 

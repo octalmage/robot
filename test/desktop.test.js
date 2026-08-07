@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createRobot, createStream, run } from "../test-support/cli.js";
+import { createRobot, createStream, createTextCapture, run } from "../test-support/cli.js";
 import { createWindowController } from "../src/windows.js";
 
 const TEST_WINDOW = {
@@ -177,6 +177,45 @@ test("types with a reliable default speed", async () => {
   assert.equal(result.text, "hello");
   assert.equal(result.cpm, 12000);
 });
+test("type and keyTap activate a selected window before sending input", async () => {
+  const events = [];
+  const robot = createRobot({
+    typeStringDelayed(...args) {
+      events.push(["type", ...args]);
+    },
+    keyTap(...args) {
+      events.push(["keyTap", ...args]);
+    }
+  });
+  const windowController = {
+    async resolve(reference) {
+      events.push(["resolve", reference]);
+      return TEST_WINDOW;
+    },
+    async activate(window) {
+      events.push(["activate", window.id]);
+      return window;
+    }
+  };
+
+  assert.equal(await run(["type", "stick", "--window", TEST_WINDOW.id, "--json"], {
+    robot,
+    windowController
+  }), 0);
+  assert.equal(await run(["keyTap", "enter", "--window", TEST_WINDOW.id, "--json"], {
+    robot,
+    windowController
+  }), 0);
+  assert.deepEqual(events, [
+    ["resolve", TEST_WINDOW.id],
+    ["activate", TEST_WINDOW.id],
+    ["type", "stick", 12000],
+    ["resolve", TEST_WINDOW.id],
+    ["activate", TEST_WINDOW.id],
+    ["keyTap", "enter"]
+  ]);
+});
+
 
 test("captures a screenshot and saves it to the requested output path", async (t) => {
   const stdout = createStream();
@@ -220,6 +259,47 @@ test("captures a screenshot and saves it to the requested output path", async (t
   assert.equal(result.output, path.join(cwd, "screen.bmp"));
   assert.equal(result.capture.scaleX, 2);
 });
+test("screenshot manages temporary captures and cleans them only with an explicit TTL", async (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "robot-managed-capture-test-"));
+  const captureRoot = path.join(cwd, "captures");
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  const robot = createRobot({
+    screen: {
+      capture() {
+        return createTextCapture();
+      }
+    }
+  });
+
+  const firstStdout = createStream();
+  assert.equal(await run(["screenshot", "--temp", "--json"], {
+    stdout: firstStdout,
+    cwd,
+    captureRoot,
+    robot,
+    now: () => 10000
+  }), 0);
+  const first = JSON.parse(firstStdout.read());
+  assert.equal(first.managed, true);
+  assert.ok(fs.existsSync(first.output));
+  assert.equal(fs.readFileSync(first.latest, "utf8"), "raw");
+  assert.ok(first.imageUri.startsWith("file://"));
+
+  const stale = path.join(path.dirname(first.output), "capture-stale.png");
+  fs.writeFileSync(stale, "stale");
+  fs.utimesSync(stale, new Date(0), new Date(0));
+  const secondStdout = createStream();
+  assert.equal(await run(["screenshot", "--temp", "--temp-ttl", "1000", "--json"], {
+    stdout: secondStdout,
+    cwd,
+    captureRoot,
+    robot,
+    now: () => 10000
+  }), 0);
+  assert.equal(fs.existsSync(stale), false);
+  assert.ok(fs.existsSync(first.output), "a capture without an expired timestamp must remain");
+});
+
 
 test("screenshot fails when robotjs cannot save the capture", async () => {
   const stdout = createStream();
@@ -500,6 +580,169 @@ test("sequence keeps focus and input steps in one runtime", async (t) => {
     double: true
   });
 });
+test("sequence accepts inline JSON and stdin without step files", async () => {
+  const events = [];
+  const robot = createRobot({
+    keyTap(...args) {
+      events.push(["keyTap", ...args]);
+    },
+    typeStringDelayed(...args) {
+      events.push(["type", ...args]);
+    }
+  });
+  const windowController = {
+    async resolve(reference) {
+      events.push(["resolve", reference]);
+      return TEST_WINDOW;
+    },
+    async activate(window) {
+      events.push(["activate", window.id]);
+      return window;
+    }
+  };
+  const inline = JSON.stringify([{ command: "keyTap", key: "backspace" }]);
+  const inlineStdout = createStream();
+  assert.equal(await run(["sequence", "--window", TEST_WINDOW.id, "--steps-json", inline, "--json"], {
+    stdout: inlineStdout,
+    robot,
+    windowController
+  }), 0);
+  assert.equal(JSON.parse(inlineStdout.read()).steps, "--steps-json");
+
+  const stdinStdout = createStream();
+  assert.equal(await run(["sequence", "--window", TEST_WINDOW.id, "--steps", "-", "--json"], {
+    stdout: stdinStdout,
+    robot,
+    windowController,
+    readStdin: () => JSON.stringify([{ command: "type", text: "32" }])
+  }), 0);
+  assert.equal(JSON.parse(stdinStdout.read()).steps, "stdin");
+  assert.deepEqual(events, [
+    ["resolve", TEST_WINDOW.id],
+    ["activate", TEST_WINDOW.id],
+    ["keyTap", "backspace"],
+    ["resolve", TEST_WINDOW.id],
+    ["activate", TEST_WINDOW.id],
+    ["type", "32", 12000]
+  ]);
+});
+
+test("sequence verifies text in the selected window before continuing", async () => {
+  const stdout = createStream();
+  const captures = [];
+  let clock = 0;
+  let ocrCall = 0;
+  const robot = createRobot({
+    screen: {
+      capture(...args) {
+        captures.push(args);
+        return createTextCapture({
+          width: TEST_WINDOW.bounds.width,
+          height: TEST_WINDOW.bounds.height,
+          screenX: TEST_WINDOW.bounds.x,
+          screenY: TEST_WINDOW.bounds.y
+        });
+      }
+    }
+  });
+  const ocrBackend = {
+    async recognize() {
+      ocrCall += 1;
+      if (ocrCall === 1) {
+        return [{ text: "Stick", confidence: 0.99, bounds: { x: 5, y: 5, width: 40, height: 20 } }];
+      }
+      if (ocrCall === 2) {
+        return [];
+      }
+      return [{ text: "Ready", confidence: 0.95, bounds: { x: 10, y: 10, width: 50, height: 20 } }];
+    }
+  };
+  const steps = JSON.stringify([
+    { command: "assertText", query: "Stick", exact: true },
+    { command: "waitForText", query: "Ready", exact: true, timeout: 500 }
+  ]);
+
+  assert.equal(await run(["sequence", "--window", TEST_WINDOW.id, "--steps-json", steps, "--json"], {
+    stdout,
+    robot,
+    ocrBackend,
+    now: () => clock,
+    sleep: async (duration) => {
+      clock += duration;
+    },
+    windowController: {
+      async resolve() {
+        return TEST_WINDOW;
+      },
+      async activate(window) {
+        return window;
+      }
+    }
+  }), 0);
+  const result = JSON.parse(stdout.read());
+  assert.equal(result.completed, 2);
+  assert.deepEqual(result.results.map((entry) => entry.command), ["assertText", "waitForText"]);
+  assert.equal(result.results[0].matchedText, "Stick");
+  assert.equal(result.results[1].matchedText, "Ready");
+  assert.equal(result.results[1].attempts, 2);
+  assert.deepEqual(captures, [
+    [100, 200, 800, 600],
+    [100, 200, 800, 600],
+    [100, 200, 800, 600]
+  ]);
+});
+
+test("sequence captures its selected window when an assertion fails", async (t) => {
+  const stdout = createStream();
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "robot-sequence-failure-test-"));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  const steps = JSON.stringify([{ command: "assertText", query: "Committed", exact: true }]);
+  const robot = createRobot({
+    screen: {
+      capture() {
+        return createTextCapture({
+          width: TEST_WINDOW.bounds.width,
+          height: TEST_WINDOW.bounds.height,
+          screenX: TEST_WINDOW.bounds.x,
+          screenY: TEST_WINDOW.bounds.y
+        });
+      }
+    }
+  });
+
+  const exitCode = await run([
+    "sequence",
+    "--window",
+    TEST_WINDOW.id,
+    "--steps-json",
+    steps,
+    "--capture-on-failure",
+    "--json"
+  ], {
+    stdout,
+    cwd,
+    captureRoot: path.join(cwd, "captures"),
+    robot,
+    ocrBackend: { async recognize() { return []; } },
+    windowController: {
+      async resolve() {
+        return TEST_WINDOW;
+      },
+      async activate(window) {
+        return window;
+      }
+    }
+  });
+  const result = JSON.parse(stdout.read());
+  const captures = result.message.match(/Failure capture: (.+?\.png)\. Latest capture: (.+?\.png)\./s);
+
+  assert.equal(exitCode, 1);
+  assert.equal(result.code, "SEQUENCE_ASSERTION_FAILED");
+  assert.ok(captures);
+  assert.ok(fs.existsSync(captures[1]));
+  assert.ok(fs.existsSync(captures[2]));
+});
+
 
 test("activateApp failure reports matching window diagnostics", async () => {
   const stdout = createStream();

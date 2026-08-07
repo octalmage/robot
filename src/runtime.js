@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { createApplicationController } from "./applications.js";
@@ -33,6 +34,9 @@ export function createRuntime(overrides = {}, environment = {}) {
   const sleep = typeof overrides.sleep === "function"
     ? overrides.sleep
     : (duration) => new Promise((resolve) => setTimeout(resolve, duration));
+  const readStdin = typeof overrides.readStdin === "function"
+    ? overrides.readStdin
+    : () => fs.readFileSync(0, "utf8");
   let robotLoaded = false;
   let robot;
   let activeOcrBackend;
@@ -108,6 +112,8 @@ export function createRuntime(overrides = {}, environment = {}) {
     platform,
     now,
     sleep,
+    readStdin,
+    captureRoot: overrides.captureRoot,
     getRobot,
     getOcrBackend,
     getApplicationController,

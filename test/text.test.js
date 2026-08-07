@@ -606,3 +606,38 @@ test("waitForText searches only the selected window", async () => {
   ]);
 });
 
+
+
+test("text retains its OCR capture when requested", async (t) => {
+  const stdout = createStream();
+  const savedPaths = [];
+  const robot = createRobot({
+    screen: {
+      capture() {
+        return createTextCapture({
+          onSave(capturePath) {
+            savedPaths.push(capturePath);
+          }
+        });
+      }
+    }
+  });
+
+  const exitCode = await run(["text", "--keep-capture", "--json"], {
+    stdout,
+    robot,
+    ocrBackend: {
+      async recognize() {
+        return [{ text: "Cycle complete", confidence: 1, bounds: { x: 1, y: 2, width: 30, height: 10 } }];
+      }
+    }
+  });
+  const result = JSON.parse(stdout.read());
+  const capturePath = result.displays[0].captureImagePath;
+  t.after(() => fs.rmSync(path.dirname(capturePath), { recursive: true, force: true }));
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(result.allText, ["Cycle complete"]);
+  assert.deepEqual(savedPaths, [capturePath]);
+  assert.ok(fs.existsSync(capturePath));
+});
