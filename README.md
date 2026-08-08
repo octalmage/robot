@@ -34,6 +34,7 @@ robot screenshot --temp
 
 robot moveMouse 450 890
 robot click 450 890
+robot keyTap t --window Minecraft
 robot type "hello world" --window Minecraft
 robot keyTap enter --window Minecraft
 
