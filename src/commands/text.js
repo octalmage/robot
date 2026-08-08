@@ -156,26 +156,47 @@ function rankTextMatches(query, ocrItems, options) {
   return matches;
 }
 
-function getTextSearchRects(robot, rect) {
-  if (rect) {
+function getTextSearchRects(robot, rect, clipToDisplays = false) {
+  if (rect && !clipToDisplays) {
     return [rect];
   }
-
   if (typeof robot.getDisplays !== "function") {
-    return [null];
+    return rect ? [rect] : [null];
   }
 
   const displays = robot.getDisplays();
-  if (!Array.isArray(displays) || displays.length <= 1) {
-    return [null];
+  if (!Array.isArray(displays) || displays.length === 0) {
+    return rect ? [rect] : [null];
+  }
+  if (!rect) {
+    return displays.length === 1
+      ? [null]
+      : displays.map((display) => ({
+        x: display.x,
+        y: display.y,
+        width: display.width,
+        height: display.height
+      }));
   }
 
-  return displays.map((display) => ({
-    x: display.x,
-    y: display.y,
-    width: display.width,
-    height: display.height
-  }));
+  const intersections = displays.flatMap((display) => {
+    const x = Math.max(rect.x, display.x);
+    const y = Math.max(rect.y, display.y);
+    const right = Math.min(rect.x + rect.width, display.x + display.width);
+    const bottom = Math.min(rect.y + rect.height, display.y + display.height);
+    return right > x && bottom > y
+      ? [{ x, y, width: right - x, height: bottom - y }]
+      : [];
+  });
+
+  if (intersections.length === 0) {
+    throw createCommandError(
+      `Capture rectangle ${rect.x},${rect.y},${rect.width}x${rect.height} does not intersect an active display.`,
+      "CAPTURE_RECT_OFF_SCREEN"
+    );
+  }
+
+  return intersections;
 }
 
 function saveCaptureForOcr(capture, tempDir) {
@@ -246,7 +267,7 @@ async function collectTextMatch(robot, query, rect, options, runtime) {
     throw createCommandError("index must be an integer greater than or equal to 1.", "INVALID_ARGUMENT");
   }
 
-  const searchRects = getTextSearchRects(robot, rect);
+  const searchRects = getTextSearchRects(robot, rect, options.clipToDisplays);
   const instances = [];
   let retainedResult = null;
   let selected = null;
@@ -306,6 +327,7 @@ export async function observeText(runtime, query, rect, options = {}) {
     confidence: options.confidence ?? 0,
     index: options.index ?? 1,
     ocrStrategy: options.ocrStrategy ?? "per-box",
+    clipToDisplays: options.clipToDisplays ?? true,
     keepCapture: false
   };
   const result = await collectTextMatch(runtime.getRobot(), query, rect, searchOptions, runtime);
@@ -392,7 +414,7 @@ function createTextMatchCommand({ description, click = false, wait = false }) {
       const runtime = c.var.runtime;
       const robot = runtime.getRobot();
       const resolved = resolveTextQuery(c.args.query, c.options.index, click);
-      const searchOptions = { ...c.options, index: resolved.index };
+      const searchOptions = { ...c.options, index: resolved.index, clipToDisplays: !!c.options.window };
       const { rect } = await resolveWindowScope(runtime, {}, searchOptions, { activate: true });
       let textResult;
       let waitResult;
@@ -455,7 +477,7 @@ export function registerTextCommands(cli) {
       const runtime = c.var.runtime;
       const robot = runtime.getRobot();
       const { rect } = await resolveWindowScope(runtime, {}, c.options, { activate: true });
-      const searchRects = getTextSearchRects(robot, rect);
+      const searchRects = getTextSearchRects(robot, rect, !!c.options.window);
       const displays = [];
       const allText = [];
 

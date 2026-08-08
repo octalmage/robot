@@ -16,7 +16,7 @@ export const rectSchema = z.object({
 export const windowSchema = z.object({
   id: z.string().describe("Operating-system window ID"),
   title: z.string().describe("Window title"),
-  process: z.string().nullable().describe("Owning process name"),
+  process: z.string().nullable().describe("Owning process or application-class name"),
   processId: z.number().int().nullable().describe("Owning process ID"),
   bounds: rectSchema.describe("Window bounds in screen coordinates"),
   display: z.string().nullable().describe("Containing display identifier"),
@@ -54,7 +54,7 @@ export const rectangleOptionsShape = {
 };
 
 export const windowOptionShape = {
-  window: z.string().optional().describe("Scope the command to a window ID or title")
+  window: z.string().optional().describe("Scope the command to a window ID, title, process, or application class")
 };
 
 export const rectangleArgsShape = {

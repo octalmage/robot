@@ -159,6 +159,25 @@ test("MCP sequence accepts steps as an actual array", async () => {
   ]);
 });
 
+test("sequence schema documents clickText step fields", async () => {
+  const stdout = createStream();
+  const exitCode = await run(["sequence", "--schema", "--format", "json"], { stdout });
+  const schema = JSON.parse(stdout.read());
+  const stepsArray = schema.options.properties.steps.anyOf.find(
+    (variant) => variant.type === "array"
+  );
+  const clickText = stepsArray.items.oneOf.find(
+    (variant) => variant.properties.command.const === "clickText"
+  );
+
+  assert.equal(exitCode, 0);
+  assert.ok(clickText.required.includes("query"));
+  for (const field of ["index", "confidence", "exact", "ocrStrategy", "button", "double"]) {
+    assert.ok(clickText.properties[field]);
+  }
+  assert.ok(schema.output.properties.results.items.properties.command.enum.includes("clickText"));
+});
+
 test("full LLM manifest is generated from command definitions", async () => {
   const stdout = createStream();
   const exitCode = await run(["--llms-full"], { stdout });

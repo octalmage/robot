@@ -1,104 +1,73 @@
 # robot
 
-Single-shot desktop automation with mouse, keyboard, image matching, and OCR.
+> Cross-platform desktop automation from the command line.
 
-## Installation
+`robot` controls the mouse and keyboard, captures the screen, finds images, and
+uses OCR to find, click, or wait for text.
 
-Requires Node.js 22 or newer. `robotjs@0.9.1` provides Node-API prebuilds for
-Linux, macOS, and Windows on x64 and arm64. Other targets fall back to a source
-build and require the
-[RobotJS build prerequisites](https://github.com/octalmage/robotjs#building).
+## Install
+
+Requires Node.js 22 or newer.
 
 ```sh
-npm install -g robotcli
+npm install --global getrobot
 ```
 
-Now run: 
-
-```
-robot screenSize
-```
-
-Assuming it installed correctly you should get something like: 
-
-```
-size:
-  width: 2240
-  height: 1260
-```
-
-### macOS permissions
-
-Use the native macOS permission prompts before the first automation command:
+On macOS, request Accessibility and Screen Recording access before automating:
 
 ```sh
 robot permissions --request
+robot permissions
 ```
 
-macOS still requires user approval. After approving Accessibility and Screen
-Recording, run `robot permissions` to confirm both grants.
+Published RobotJS prebuilds support Linux, macOS, and Windows on x64 and arm64,
+including PNG and BMP screenshots. Other targets require the
+[RobotJS build prerequisites](https://github.com/octalmage/robotjs#building).
 
-### PNG screenshots
-
-RobotJS 0.9.1 prebuilds include PNG support on every supported platform, so
-`robot screenshot --output screen.png` works without extra system libraries.
-BMP output remains available.
-
-## Usage
+## Examples
 
 ```sh
-robot permissions
 robot windows
 robot activateWindow --title "Minecraft*"
-robot screenshot --window Minecraft --output /tmp/minecraft.png
-robot screenshot --window Minecraft --temp
-robot screenshot --output /tmp/screen.bmp
+robot screenshot --window Minecraft --output minecraft.png
+robot screenshot --temp
+
 robot moveMouse 450 890
 robot click 450 890
-robot type stick --window Minecraft
+robot type "hello world" --window Minecraft
 robot keyTap enter --window Minecraft
-robot scrollMouse 0 -5
-robot mousePos
-robot screenSize
-robot pixelColor 450 890
 
-robot openApp "Example App"
-robot activateApp "Example App"
+robot findImage ./button.png --tolerance 0.1
+robot clickImage ./button.png
+robot clickText "Message General"
+robot waitForText "cycle complete" --window Minecraft
+
 robot sequence --window Minecraft --steps steps.json
-robot sequence --window Minecraft --steps-json '[{"command":"type","text":"32"}]'
-
-robot findImage ./assets/button.bmp --tolerance 0.1
-robot clickImage ./assets/button.bmp --tolerance 0.1
-robot waitForImage ./assets/button.bmp --timeout 30000
-
-robot text --keep-capture
-robot findText "Message General"
-robot clickText "Message General" 2
-robot clickWord "continue" --index 2
-robot waitForText "Options" --timeout 30000
-robot waitForText "cycle complete" --window Minecraft --timeout 30000
 ```
 
-Commands print TOON by default. Use `--json` or
-`--format <toon|json|yaml|md|jsonl>` for another format. `--full-output` adds
-Incur's result metadata.
+Run `robot --help` or `<command> --help` for the complete command API. Commands
+print TOON by default; use `--json` or
+`--format <toon|json|yaml|md|jsonl>` for another format.
 
-`type` defaults to 12,000 characters per minute (5 ms per character). Override
-it with `--cpm`.
+`type` defaults to 12,000 characters per minute. Override it with `--cpm`.
 
 ## Window targeting and sequences
 
-`robot windows` lists application windows with their titles, IDs,
-processes, bounds, displays, and display scales. `activateWindow` accepts
-`--title` (with `*` and `?` wildcards) or an exact `--id`. Activation failures
-include matching window diagnostics instead of only the operating-system
-process error.
+`robot windows` lists titles, IDs, process/application identifiers, bounds,
+displays, and display scales. `activateWindow` accepts an exact `--id` or a
+`--title` with optional `*` and `?` wildcards. Failures include matching-window
+diagnostics.
 
-Use `--window <id-or-title>` on `screenshot`, `click`, `type`, `keyTap`, image
-commands, and text commands to activate the selected window before operating.
-Capture operations are constrained to that window, and rectangle and click
-coordinates are window-relative. This keeps wait commands from matching the
-same text or image in another application.
+`openApp` and `activateApp` use native application identifiers: an application
+name on macOS, an executable or `AppActivate` target on Windows, and a desktop
+entry or `WM_CLASS` target on Linux. For portable targeting, use `windows` and
+select a window by ID or title.
+
+Use `--window <reference>` on `screenshot`, `click`, `type`, `keyTap`, image,
+and text commands. References can be a window ID, title, process, or application
+class. Exact process/application matches take precedence over title substrings.
+Ambiguous references fail and list the matching window IDs. Bounds are refreshed
+after activation, and text scopes are clipped to visible display areas.
 
 `sequence` focuses its target once, then runs input and OCR verification steps
 in the same process:
@@ -109,8 +78,30 @@ in the same process:
   { "command": "type", "text": "cycle complete", "cpm": 12000 },
   { "command": "assertText", "query": "cycle complete", "exact": true },
   { "command": "click", "x": 100, "y": 50, "button": "left" },
+  { "command": "clickText", "query": "New Note", "exact": true },
   { "command": "waitForText", "query": "Ready", "timeout": 30000 }
 ]
+```
+
+The file must contain a non-empty JSON array. Each step has one of these
+formats:
+
+| `command` | Required fields | Optional fields and defaults |
+| --- | --- | --- |
+| `keyTap` | `key` | `modifiers` |
+| `type` | `text` | `cpm` (`12000`) |
+| `click` | none | `x` and `y` together (window-relative), `button` (`left`), `double` (`false`) |
+| `clickText` | `query` | `index` (`1`), `confidence` (`0`), `exact`, `button` (`left`), `double` (`false`), OCR options |
+| `assertText` | `query` | `confidence` (`0`), `exact`, OCR options |
+| `waitForText` | `query` | `timeout` (`30000`), `confidence` (`0`), `exact`, OCR options |
+
+OCR options are `ocr`, `recLangs`, and `ocrStrategy` (`per-box`). A `click`
+without coordinates clicks the current pointer. `clickText`, `assertText`, and
+`waitForText` stop the sequence when their target is not found. Print the
+complete generated JSON Schema with:
+
+```sh
+robot sequence --schema --format json
 ```
 
 Pass the array by file, inline JSON, stdin, or directly as the MCP `steps`
@@ -123,7 +114,7 @@ printf '%s' '[{"command":"type","text":"32"}]' | robot sequence --window Minecra
 ```
 
 `--capture-on-failure` retains a managed screenshot of the selected window
-when any input, assertion, or wait step fails.
+when any step fails.
 
 ## Managed captures
 

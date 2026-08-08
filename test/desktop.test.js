@@ -375,6 +375,66 @@ test("activateApp delegates an arbitrary application name to the platform", asyn
   assert.equal(result.target, "Example App");
 });
 
+test("Windows and Linux application adapters preserve the requested target", async () => {
+  const cases = [
+    {
+      platform: "win32",
+      command: "openApp",
+      executable: "powershell.exe",
+      args: ["-NoProfile", "-NonInteractive", "-Command", "Start-Process -FilePath $args[0]", "Example App"]
+    },
+    {
+      platform: "win32",
+      command: "activateApp",
+      executable: "powershell.exe",
+      args: [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "$shell = New-Object -ComObject WScript.Shell; if (-not $shell.AppActivate($args[0])) { exit 1 }",
+        "Example App"
+      ]
+    },
+    {
+      platform: "linux",
+      command: "openApp",
+      executable: "gtk-launch",
+      args: ["Example App"]
+    },
+    {
+      platform: "linux",
+      command: "activateApp",
+      executable: "wmctrl",
+      args: ["-xa", "Example App"]
+    }
+  ];
+
+  for (const expectation of cases) {
+    const stdout = createStream();
+    const calls = [];
+    const exitCode = await run([expectation.command, "Example", "App", "--json"], {
+      stdout,
+      platform: expectation.platform,
+      runProcess(command, args, label) {
+        calls.push({ command, args, label });
+        return "";
+      }
+    });
+
+    assert.equal(exitCode, 0, `${expectation.platform} ${expectation.command}`);
+    assert.deepEqual(calls, [{
+      command: expectation.executable,
+      args: expectation.args,
+      label: expectation.command === "openApp" ? "Open application" : "Activate application"
+    }]);
+    assert.deepEqual(JSON.parse(stdout.read()), {
+      application: "Example App",
+      target: "Example App"
+    });
+  }
+});
+
+
 test("windows returns metadata and filters minimized entries", async () => {
   const stdout = createStream();
   const calls = [];
@@ -404,6 +464,96 @@ test("windows returns metadata and filters minimized entries", async () => {
   assert.deepEqual(result, { platform: "win32", windows: [TEST_WINDOW] });
 });
 
+test("Linux windows use WM_CLASS as their process identifier and omit untitled entries", async () => {
+  const output = [
+    "0x03e00007  0 1234 100 200 800 600 workstation example.ExampleApp Example Window",
+    "0x03e00008  0 2345 10 20 300 200 workstation hidden.HiddenApp"
+  ].join("\n");
+  const calls = [];
+  const controller = createWindowController("linux", (command, args, label) => {
+    calls.push({ command, args, label });
+    return output;
+  });
+
+  const windows = await controller.list();
+
+  assert.deepEqual(calls, [{ command: "wmctrl", args: ["-lpGx"], label: "List windows" }]);
+  assert.deepEqual(windows, [{
+    id: "0x03e00007",
+    title: "Example Window",
+    process: "example.ExampleApp",
+    processId: 1234,
+    bounds: { x: 100, y: 200, width: 800, height: 600 },
+    display: null,
+    scale: null
+  }]);
+});
+
+test("window adapters share resolution and activation-refresh behavior", async () => {
+  const staleBounds = { x: -20, y: 30, width: 300, height: 200 };
+  const refreshedBounds = { x: 40, y: 50, width: 800, height: 600 };
+  const cases = [
+    {
+      platform: "win32",
+      id: "4242",
+      process: "ExampleApp",
+      activationCommand: "powershell.exe"
+    },
+    {
+      platform: "darwin",
+      id: "4242",
+      process: "ExampleApp",
+      activationCommand: "/usr/bin/osascript"
+    },
+    {
+      platform: "linux",
+      id: "0x03e00007",
+      process: "example.ExampleApp",
+      activationCommand: "wmctrl"
+    }
+  ];
+
+  for (const entry of cases) {
+    let listCount = 0;
+    const calls = [];
+    const controller = createWindowController(entry.platform, (command, args, label) => {
+      calls.push({ command, args, label });
+      if (label !== "List windows") {
+        return "";
+      }
+
+      listCount += 1;
+      const bounds = listCount === 1 ? staleBounds : refreshedBounds;
+      if (entry.platform === "linux") {
+        return `${entry.id}  0 1234 ${bounds.x} ${bounds.y} ${bounds.width} ${bounds.height} workstation ${entry.process} Example Window`;
+      }
+      return JSON.stringify([{
+        id: entry.id,
+        title: "Example Window",
+        process: entry.process,
+        processId: 1234,
+        bounds,
+        display: "1",
+        scale: 1
+      }]);
+    });
+
+    const resolved = await controller.resolve(entry.process);
+    const activated = await controller.activate(resolved);
+
+    assert.deepEqual(resolved.bounds, staleBounds, entry.platform);
+    assert.deepEqual(activated.bounds, refreshedBounds, entry.platform);
+    assert.deepEqual(
+      calls.map((call) => call.label),
+      ["List windows", "Activate window", "List windows"],
+      entry.platform
+    );
+    assert.equal(calls[1].command, entry.activationCommand, entry.platform);
+  }
+});
+
+
+
 test("activateWindow resolves a title wildcard and activates its window ID", async () => {
   const stdout = createStream();
   const calls = [];
@@ -418,12 +568,76 @@ test("activateWindow resolves a title wildcard and activates its window ID", asy
   const result = JSON.parse(stdout.read());
 
   assert.equal(exitCode, 0);
-  assert.deepEqual(calls.map((call) => call.label), ["List windows", "Activate window"]);
+  assert.deepEqual(calls.map((call) => call.label), ["List windows", "Activate window", "List windows"]);
   assert.deepEqual(calls[1].args.slice(0, 3), ["-NoProfile", "-NonInteractive", "-Command"]);
   assert.equal(calls[1].args.length, 4);
   assert.match(calls[1].args[3], /\$handle = \[long\]::Parse\('4242'/);
   assert.doesNotMatch(calls[1].args[3], /\$args\[0\]/);
   assert.deepEqual(result.window, TEST_WINDOW);
+});
+
+test("activation refreshes window bounds before scoped capture", async () => {
+  const staleWindow = {
+    ...TEST_WINDOW,
+    bounds: { x: -290, y: 803, width: 107, height: 96 }
+  };
+  const refreshedWindow = {
+    ...TEST_WINDOW,
+    bounds: { x: 85, y: 213, width: 1096, height: 697 }
+  };
+  const calls = [];
+  const controller = createWindowController("darwin", (command, args, label) => {
+    calls.push(label);
+    return label === "List windows" ? JSON.stringify([refreshedWindow]) : "";
+  });
+
+  assert.deepEqual(await controller.activate(staleWindow), refreshedWindow);
+  assert.deepEqual(calls, ["Activate window", "List windows"]);
+});
+
+test("window references prefer exact process names over title substrings", async () => {
+  const notesWindow = {
+    ...TEST_WINDOW,
+    id: "9001",
+    title: "All iCloud",
+    process: "Notes"
+  };
+  const unrelatedWindow = {
+    ...TEST_WINDOW,
+    id: "9002",
+    title: "Fix Notes window capture error",
+    process: "iTerm"
+  };
+  const controller = createWindowController("darwin", (command, args, label) => {
+    assert.equal(label, "List windows");
+    return JSON.stringify([unrelatedWindow, notesWindow]);
+  });
+
+  assert.deepEqual(await controller.resolve("Notes"), notesWindow);
+});
+
+test("window references reject ambiguous process matches before capture", async () => {
+  const notesWindows = [
+    { ...TEST_WINDOW, id: "9001", title: "All iCloud", process: "Notes" },
+    { ...TEST_WINDOW, id: "9002", title: "Shopping", process: "Notes" }
+  ];
+  const unrelatedWindow = {
+    ...TEST_WINDOW,
+    id: "9003",
+    title: "Fix Notes window capture error",
+    process: "iTerm"
+  };
+  const controller = createWindowController("darwin", () =>
+    JSON.stringify([unrelatedWindow, ...notesWindows])
+  );
+
+  await assert.rejects(controller.resolve("Notes"), (error) => {
+    assert.equal(error.code, "WINDOW_AMBIGUOUS");
+    assert.match(error.message, /All iCloud/);
+    assert.match(error.message, /Shopping/);
+    assert.doesNotMatch(error.message, /Fix Notes window capture error/);
+    return true;
+  });
 });
 
 test("screenshot scopes captures to the activated window", async (t) => {
@@ -690,6 +904,132 @@ test("sequence verifies text in the selected window before continuing", async ()
     [100, 200, 800, 600],
     [100, 200, 800, 600]
   ]);
+});
+
+test("sequence clickText finds and clicks text inside the selected window", async () => {
+  const stdout = createStream();
+  const events = [];
+  const robot = createRobot({
+    screen: {
+      capture(...args) {
+        events.push(["capture", ...args]);
+        return createTextCapture({
+          width: TEST_WINDOW.bounds.width,
+          height: TEST_WINDOW.bounds.height,
+          screenX: TEST_WINDOW.bounds.x,
+          screenY: TEST_WINDOW.bounds.y
+        });
+      }
+    },
+    moveMouseSmooth(...args) {
+      events.push(["move", ...args]);
+    },
+    mouseClick(...args) {
+      events.push(["click", ...args]);
+    }
+  });
+  const steps = JSON.stringify([{
+    command: "clickText",
+    query: "New Note",
+    exact: true,
+    button: "right",
+    double: true
+  }]);
+
+  assert.equal(await run(["sequence", "--window", TEST_WINDOW.id, "--steps-json", steps, "--json"], {
+    stdout,
+    robot,
+    ocrBackend: {
+      async recognize() {
+        return [{
+          text: "New Note",
+          confidence: 0.99,
+          bounds: { x: 10, y: 20, width: 80, height: 20 }
+        }];
+      }
+    },
+    windowController: {
+      async resolve() {
+        return TEST_WINDOW;
+      },
+      async activate(window) {
+        return window;
+      }
+    }
+  }), 0);
+  const result = JSON.parse(stdout.read());
+
+  assert.equal(result.completed, 1);
+  assert.deepEqual(result.results[0], {
+    index: 1,
+    command: "clickText",
+    query: "New Note",
+    found: true,
+    matchedText: "New Note",
+    confidence: 0.99,
+    candidateCount: 1,
+    x: 150,
+    y: 230,
+    button: "right",
+    double: true
+  });
+  assert.deepEqual(events, [
+    ["capture", 100, 200, 800, 600],
+    ["move", 150, 230],
+    ["click", "right", true]
+  ]);
+});
+
+test("sequence clickText stops the sequence when its text is missing", async () => {
+  const stdout = createStream();
+  const inputEvents = [];
+  const robot = createRobot({
+    screen: {
+      capture() {
+        return createTextCapture({
+          width: TEST_WINDOW.bounds.width,
+          height: TEST_WINDOW.bounds.height,
+          screenX: TEST_WINDOW.bounds.x,
+          screenY: TEST_WINDOW.bounds.y
+        });
+      }
+    },
+    keyTap(...args) {
+      inputEvents.push(args);
+    },
+    mouseClick(...args) {
+      inputEvents.push(args);
+    }
+  });
+  const steps = JSON.stringify([
+    { command: "clickText", query: "Missing", exact: true },
+    { command: "keyTap", key: "enter" }
+  ]);
+  const exitCode = await run([
+    "sequence",
+    "--window",
+    TEST_WINDOW.id,
+    "--steps-json",
+    steps,
+    "--json"
+  ], {
+    stdout,
+    robot,
+    ocrBackend: { async recognize() { return []; } },
+    windowController: {
+      async resolve() {
+        return TEST_WINDOW;
+      },
+      async activate(window) {
+        return window;
+      }
+    }
+  });
+  const result = JSON.parse(stdout.read());
+
+  assert.equal(exitCode, 1);
+  assert.equal(result.code, "SEQUENCE_TEXT_NOT_FOUND");
+  assert.deepEqual(inputEvents, []);
 });
 
 test("sequence captures its selected window when an assertion fails", async (t) => {

@@ -465,11 +465,11 @@ function parseLinuxWindows(output) {
       continue;
     }
 
-    const [, id, , processId, x, y, width, height, process, , title] = match;
+    const [, id, , processId, x, y, width, height, , applicationClass, title] = match;
     const window = normalizeWindow({
       id,
       title,
-      process,
+      process: applicationClass,
       processId: Number(processId),
       bounds: {
         x: Number(x),
@@ -480,7 +480,7 @@ function parseLinuxWindows(output) {
       display: null,
       scale: null
     });
-    if (window) {
+    if (window?.title) {
       windows.push(window);
     }
   }
@@ -507,6 +507,37 @@ function matchByTitle(windows, reference) {
   return exact.length > 0
     ? exact
     : windows.filter((window) => window.title.toLocaleLowerCase().includes(normalized));
+}
+
+function matchByReference(windows, reference) {
+  const normalized = reference.toLocaleLowerCase();
+  const exactTitle = windows.filter(
+    (window) => window.title.toLocaleLowerCase() === normalized
+  );
+  if (exactTitle.length > 0) {
+    return exactTitle;
+  }
+
+  const exactProcess = windows.filter(
+    (window) => window.process?.toLocaleLowerCase() === normalized
+  );
+  if (exactProcess.length > 0) {
+    return exactProcess;
+  }
+
+  const titleMatches = matchByTitle(windows, reference);
+  if (titleMatches.length > 0) {
+    return titleMatches;
+  }
+
+  if (reference.includes("*") || reference.includes("?")) {
+    const matcher = createWildcardMatcher(reference);
+    return windows.filter((window) => window.process && matcher.test(window.process));
+  }
+
+  return windows.filter(
+    (window) => window.process?.toLocaleLowerCase().includes(normalized)
+  );
 }
 
 function normalizeReference(reference) {
@@ -566,7 +597,9 @@ export function createWindowController(platform, runner) {
       matches = windows.filter((window) => window.id.toLocaleLowerCase() === value.toLocaleLowerCase());
     }
     if (matches.length === 0 && mode !== "id") {
-      matches = matchByTitle(windows, value);
+      matches = mode === "title"
+        ? matchByTitle(windows, value)
+        : matchByReference(windows, value);
     }
 
     if (matches.length === 0) {
@@ -626,7 +659,7 @@ export function createWindowController(platform, runner) {
       );
     }
 
-    return window;
+    return resolve(window.id, "id");
   }
 
   return { list, resolve, activate };

@@ -641,3 +641,62 @@ test("text retains its OCR capture when requested", async (t) => {
   assert.deepEqual(savedPaths, [capturePath]);
   assert.ok(fs.existsSync(capturePath));
 });
+
+test("findText clips a selected window capture to its visible display area", async () => {
+  const stdout = createStream();
+  const captureCalls = [];
+  const window = {
+    id: "9001",
+    title: "All iCloud",
+    process: "Notes",
+    processId: 11455,
+    bounds: { x: 900, y: 700, width: 200, height: 200 },
+    display: "1",
+    scale: 1
+  };
+  const robot = createRobot({
+    getDisplays() {
+      return [{ id: 1, x: 0, y: 0, width: 1000, height: 800, isMain: true }];
+    },
+    screen: {
+      capture(...args) {
+        captureCalls.push(args);
+        return createTextCapture({
+          width: 100,
+          height: 100,
+          screenX: 900,
+          screenY: 700
+        });
+      }
+    }
+  });
+
+  const exitCode = await run([
+    "findText",
+    "Missing",
+    "--exact",
+    "--window",
+    "Notes",
+    "--json"
+  ], {
+    stdout,
+    robot,
+    ocrBackend: { async recognize() { return []; } },
+    windowController: {
+      async resolve(reference) {
+        assert.equal(reference, "Notes");
+        return window;
+      },
+      async activate(selected) {
+        return selected;
+      }
+    }
+  });
+  const result = JSON.parse(stdout.read());
+
+  assert.equal(exitCode, 0);
+  assert.equal(result.found, false);
+  assert.deepEqual(captureCalls, [[900, 700, 100, 100]]);
+  assert.equal(result.capture.width, 100);
+  assert.equal(result.capture.height, 100);
+});

@@ -6,6 +6,7 @@ import {
   clickOptionsShape,
   cpmSchema,
   createCommandError,
+  indexSchema,
   performClick,
   performKeyTap,
   performType,
@@ -54,19 +55,27 @@ const waitForTextStepSchema = z.object({
   timeout: timeoutSchema
 });
 
+const clickTextStepSchema = z.object({
+  command: z.literal("clickText"),
+  ...textStepOptionsShape,
+  index: indexSchema,
+  ...clickOptionsShape
+});
+
 export const sequenceStepsSchema = z.array(
   z.discriminatedUnion("command", [
     keyTapStepSchema,
     typeStepSchema,
     clickStepSchema,
     assertTextStepSchema,
-    waitForTextStepSchema
+    waitForTextStepSchema,
+    clickTextStepSchema
   ])
 ).min(1);
 
 const sequenceResultSchema = z.object({
   index: z.number().int().describe("One-based step index"),
-  command: z.enum(["keyTap", "type", "click", "assertText", "waitForText"]).describe("Executed command"),
+  command: z.enum(["keyTap", "type", "click", "assertText", "waitForText", "clickText"]).describe("Executed command"),
   key: z.string().optional().describe("Pressed key"),
   modifiers: z.array(z.string()).optional().describe("Applied modifier keys"),
   text: z.string().optional().describe("Typed text"),
@@ -75,7 +84,7 @@ const sequenceResultSchema = z.object({
   y: z.number().optional().describe("Clicked vertical screen coordinate"),
   button: z.enum(["left", "middle", "right"]).optional().describe("Mouse button used"),
   double: z.boolean().optional().describe("Whether a double-click was used"),
-  query: z.string().optional().describe("Asserted or awaited text"),
+  query: z.string().optional().describe("Text query"),
   found: z.boolean().optional().describe("Whether matching text was found"),
   matchedText: z.string().nullable().optional().describe("Matched OCR text"),
   confidence: z.number().nullable().optional().describe("Matched OCR confidence"),
@@ -195,6 +204,24 @@ async function executeStep(runtime, robot, step, window, index) {
     };
   }
 
+  if (step.command === "clickText") {
+    const result = await observeText(runtime, step.query, window.bounds, step);
+    if (!result.found || !result.screenPoint) {
+      throw createCommandError(
+        `Text click failed: ${JSON.stringify(step.query)} was not found.`,
+        "SEQUENCE_TEXT_NOT_FOUND"
+      );
+    }
+    performClick(robot, result.screenPoint, step);
+    return {
+      ...summarizeTextStep(index, step.command, step.query, result),
+      x: result.screenPoint.x,
+      y: result.screenPoint.y,
+      button: step.button || "left",
+      double: !!step.double
+    };
+  }
+
   if (step.command === "assertText") {
     const result = await observeText(runtime, step.query, window.bounds, step);
     if (!result.found) {
@@ -222,7 +249,7 @@ export function registerSequenceCommand(cli) {
   cli.command("sequence", {
     description: "Run input and text-verification steps in one focused process.",
     options: z.object({
-      window: z.string().describe("Target window ID or title"),
+      window: z.string().describe("Target window ID, title, or process name"),
       steps: z.union([z.string(), sequenceStepsSchema]).optional()
         .describe("JSON file, '-' for stdin, or an MCP array of steps"),
       stepsJson: z.string().optional().describe("Inline JSON array of steps"),
@@ -238,7 +265,7 @@ export function registerSequenceCommand(cli) {
       { options: { window: true, steps: true } },
       { options: { window: true, "steps-json": true } }
     ],
-    hint: "Click coordinates are window-relative. Steps support keyTap, type, click, assertText, and waitForText.",
+    hint: "Click coordinates are window-relative. Steps support keyTap, type, click, clickText, assertText, and waitForText.",
     async run(c) {
       const runtime = c.var.runtime;
       const resolved = resolveSteps(runtime, c.options);
