@@ -10,7 +10,7 @@ uses OCR to find, click, or wait for text.
 Requires Node.js 22 or newer.
 
 ```sh
-npm install --global getrobot
+npm install -g getrobot
 ```
 
 On macOS, request Accessibility and Screen Recording access before automating:
