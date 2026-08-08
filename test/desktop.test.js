@@ -1,11 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { PassThrough } from "node:stream";
 import { createRobot, createStream, createTextCapture, run } from "../test-support/cli.js";
-import { createWindowController } from "../src/windows.js";
+import { createWindowController, createWindowsWindowHost } from "../src/windows.js";
 
 const TEST_WINDOW = {
   id: "4242",
@@ -463,6 +465,64 @@ test("windows returns metadata and filters minimized entries", async () => {
   assert.equal(calls[0].label, "List windows");
   assert.deepEqual(result, { platform: "win32", windows: [TEST_WINDOW] });
 });
+
+test("Windows scoped commands reuse one PowerShell window host", async () => {
+  const stdout = createStream();
+  const child = new EventEmitter();
+  const spawnCalls = [];
+  const operations = [];
+  let inputBuffer = "";
+
+  child.stdin = new PassThrough();
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  child.exitCode = null;
+  child.signalCode = null;
+  child.killed = false;
+  child.kill = () => {
+    child.killed = true;
+    child.exitCode = 0;
+    queueMicrotask(() => child.emit("exit", 0, null));
+    return true;
+  };
+  child.stdin.on("data", (chunk) => {
+    inputBuffer += chunk.toString();
+    let newlineIndex = inputBuffer.indexOf("\n");
+    while (newlineIndex >= 0) {
+      const request = JSON.parse(inputBuffer.slice(0, newlineIndex));
+      operations.push(request.operation);
+      const data = request.operation === "list" ? [TEST_WINDOW] : true;
+      child.stdout.write(`${JSON.stringify({ id: request.id, ok: true, data })}\n`);
+      inputBuffer = inputBuffer.slice(newlineIndex + 1);
+      newlineIndex = inputBuffer.indexOf("\n");
+    }
+  });
+
+  const windowsHost = createWindowsWindowHost({
+    spawnProcess(command, args, options) {
+      spawnCalls.push({ command, args, options });
+      return child;
+    }
+  });
+  const exitCode = await run(["activateWindow", "--id", TEST_WINDOW.id, "--json"], {
+    stdout,
+    platform: "win32",
+    windowsHost,
+    runProcess() {
+      assert.fail("Persistent Windows host should replace one-shot PowerShell calls");
+    }
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(JSON.parse(stdout.read()).window, TEST_WINDOW);
+  assert.deepEqual(operations, ["list", "activate", "list"]);
+  assert.equal(spawnCalls.length, 1);
+  assert.equal(spawnCalls[0].command, "powershell.exe");
+  assert.deepEqual(spawnCalls[0].args.slice(0, 3), ["-NoProfile", "-NonInteractive", "-Command"]);
+  assert.deepEqual(spawnCalls[0].options, { windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+  assert.equal(child.killed, true);
+});
+
 
 test("Linux windows use WM_CLASS as their process identifier and omit untitled entries", async () => {
   const output = [
@@ -1129,5 +1189,22 @@ test("Windows activation script resolves its native thread APIs", {
       return true;
     }
   );
+});
+
+test("persistent Windows host serves repeated native requests", {
+  skip: process.platform !== "win32"
+}, async () => {
+  const host = createWindowsWindowHost();
+  try {
+    assert.ok(Array.isArray(await host.list()));
+    assert.ok(Array.isArray(await host.list()));
+    await assert.rejects(host.activate("0"), (error) => {
+      assert.equal(error.code, "WINDOW_HOST_REQUEST_FAILED");
+      assert.match(error.message, /Windows rejected the foreground-window request/);
+      return true;
+    });
+  } finally {
+    await host.dispose();
+  }
 });
 

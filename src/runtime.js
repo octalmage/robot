@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { createApplicationController } from "./applications.js";
 import { createExternalBackend, createPaddleBackend } from "./ocr.js";
-import { createWindowController } from "./windows.js";
+import { createWindowController, createWindowsWindowHost } from "./windows.js";
 import { createCommandError, resolveExecutablePath } from "./commands/shared.js";
 
 const requireRobot = createRequire(import.meta.url);
@@ -43,6 +43,7 @@ export function createRuntime(overrides = {}, environment = {}) {
   let ownsOcrBackend = false;
   let applicationController;
   let windowController;
+  let ownsWindowController = false;
 
   function getRobot() {
     if (!robotLoaded) {
@@ -77,7 +78,17 @@ export function createRuntime(overrides = {}, environment = {}) {
 
   function getWindowController() {
     if (!windowController) {
-      windowController = overrides.windowController || createWindowController(platform, processRunner);
+      if (overrides.windowController) {
+        windowController = overrides.windowController;
+      } else {
+        const windowsHost = overrides.windowsHost || (
+          platform === "win32" && process.platform === "win32" && !overrides.runProcess
+            ? createWindowsWindowHost()
+            : null
+        );
+        windowController = createWindowController(platform, processRunner, { windowsHost });
+        ownsWindowController = true;
+      }
     }
 
     return windowController;
@@ -97,13 +108,24 @@ export function createRuntime(overrides = {}, environment = {}) {
 
   async function dispose() {
     const backend = activeOcrBackend;
-    const shouldDestroy = ownsOcrBackend && backend && typeof backend.destroy === "function";
+    const shouldDestroyBackend = ownsOcrBackend && backend && typeof backend.destroy === "function";
+    const controller = windowController;
+    const shouldDisposeController = ownsWindowController && controller && typeof controller.dispose === "function";
 
     activeOcrBackend = undefined;
     ownsOcrBackend = false;
+    applicationController = undefined;
+    windowController = undefined;
+    ownsWindowController = false;
 
-    if (shouldDestroy) {
-      await backend.destroy();
+    try {
+      if (shouldDestroyBackend) {
+        await backend.destroy();
+      }
+    } finally {
+      if (shouldDisposeController) {
+        await controller.dispose();
+      }
     }
   }
 

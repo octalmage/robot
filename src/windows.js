@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { createCommandError } from "./commands/shared.js";
 
 const WINDOWS_API = String.raw`
@@ -156,6 +157,21 @@ public static class RobotWindowApi
     public static RobotWindowInfo[] List()
     {
         List<RobotWindowInfo> windows = new List<RobotWindowInfo>();
+        Dictionary<int, string> processNames = new Dictionary<int, string>();
+        foreach (Process process in Process.GetProcesses())
+        {
+            try
+            {
+                processNames[process.Id] = process.ProcessName;
+            }
+            catch
+            {
+            }
+            finally
+            {
+                process.Dispose();
+            }
+        }
         EnumWindows(delegate(IntPtr hWnd, IntPtr lParam)
         {
             int titleLength = GetWindowTextLength(hWnd);
@@ -177,13 +193,7 @@ public static class RobotWindowApi
             uint processId;
             GetWindowThreadProcessId(hWnd, out processId);
             string processName = null;
-            try
-            {
-                processName = Process.GetProcessById((int)processId).ProcessName;
-            }
-            catch
-            {
-            }
+            processNames.TryGetValue((int)processId, out processName);
 
             windows.Add(new RobotWindowInfo
             {
@@ -254,7 +264,46 @@ ${WINDOWS_API}
 ConvertTo-Json -InputObject @([RobotWindowApi]::List()) -Compress -Depth 4
 `;
 
-function createWindowsActivateScript(windowId) {
+const WINDOWS_HOST_SCRIPT = String.raw`
+$ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+Add-Type -TypeDefinition @'
+${WINDOWS_API}
+'@
+[RobotWindowApi]::EnableDpiAwareness()
+
+while ($null -ne ($line = [Console]::In.ReadLine())) {
+  if ([string]::IsNullOrWhiteSpace($line)) {
+    continue
+  }
+
+  $requestId = $null
+  try {
+    $request = ConvertFrom-Json -InputObject $line
+    $requestId = $request.id
+    if ($request.operation -eq "list") {
+      $data = @([RobotWindowApi]::List())
+    } elseif ($request.operation -eq "activate") {
+      $handle = [long]::Parse([string]$request.windowId, [Globalization.CultureInfo]::InvariantCulture)
+      if (-not [RobotWindowApi]::Activate($handle)) {
+        throw "Windows rejected the foreground-window request for handle $handle."
+      }
+      $data = $true
+    } else {
+      throw "Unknown window operation: $($request.operation)"
+    }
+    $response = [ordered]@{ id = $requestId; ok = $true; data = $data }
+  } catch {
+    $response = [ordered]@{ id = $requestId; ok = $false; error = $_.Exception.Message }
+  }
+
+  [Console]::Out.WriteLine((ConvertTo-Json -InputObject $response -Compress -Depth 5))
+  [Console]::Out.Flush()
+}
+`;
+
+function normalizeWindowsHandle(windowId) {
   const value = String(windowId);
   if (!/^-?\d+$/.test(value)) {
     throw createCommandError(`Windows window ID must be a decimal integer: ${JSON.stringify(value)}.`, "INVALID_WINDOW_ID");
@@ -264,7 +313,11 @@ function createWindowsActivateScript(windowId) {
   if (handle < -9223372036854775808n || handle > 9223372036854775807n) {
     throw createCommandError(`Windows window ID is outside the signed 64-bit range: ${value}.`, "INVALID_WINDOW_ID");
   }
+  return value;
+}
 
+function createWindowsActivateScript(windowId) {
+  const value = normalizeWindowsHandle(windowId);
   return String.raw`
 $ErrorActionPreference = "Stop"
 Add-Type -TypeDefinition @'
@@ -276,6 +329,174 @@ if (-not [RobotWindowApi]::Activate($handle)) {
   throw "Windows rejected the foreground-window request for handle $handle."
 }
 `;
+}
+
+export function createWindowsWindowHost(options = {}) {
+  const spawnProcess = options.spawnProcess || spawn;
+  const pending = new Map();
+  let child = null;
+  let outputBuffer = "";
+  let errorBuffer = "";
+  let nextRequestId = 1;
+  let disposed = false;
+  let disposal;
+
+  function createHostError(message, code = "WINDOW_HOST_ERROR") {
+    const details = errorBuffer.trim();
+    return createCommandError(details ? `${message}: ${details}` : message, code);
+  }
+
+  function rejectPending(error) {
+    for (const request of pending.values()) {
+      request.reject(error);
+    }
+    pending.clear();
+  }
+
+  function stopWithError(message) {
+    rejectPending(createHostError(message));
+    if (child && !child.killed) {
+      child.kill();
+    }
+  }
+
+  function handleLine(rawLine) {
+    const line = rawLine.replace(/^\uFEFF/, "").trim();
+    if (!line) {
+      return;
+    }
+
+    let response;
+    try {
+      response = JSON.parse(line);
+    } catch (error) {
+      stopWithError(`Windows window host returned invalid JSON: ${error.message}`);
+      return;
+    }
+
+    const key = String(response.id);
+    const request = pending.get(key);
+    if (!request) {
+      stopWithError(`Windows window host returned an unknown request ID: ${key}`);
+      return;
+    }
+
+    pending.delete(key);
+    if (response.ok === true) {
+      request.resolve(response.data);
+    } else {
+      request.reject(createCommandError(
+        response.error || "Windows window host operation failed.",
+        "WINDOW_HOST_REQUEST_FAILED"
+      ));
+    }
+  }
+
+  function handleOutput(chunk) {
+    outputBuffer += chunk;
+    let newlineIndex = outputBuffer.indexOf("\n");
+    while (newlineIndex >= 0) {
+      handleLine(outputBuffer.slice(0, newlineIndex));
+      outputBuffer = outputBuffer.slice(newlineIndex + 1);
+      newlineIndex = outputBuffer.indexOf("\n");
+    }
+  }
+
+  function start() {
+    if (disposed) {
+      throw createCommandError("Windows window host has been disposed.", "WINDOW_HOST_DISPOSED");
+    }
+    if (child) {
+      return child;
+    }
+
+    const running = spawnProcess(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-Command", WINDOWS_HOST_SCRIPT],
+      { windowsHide: true, stdio: ["pipe", "pipe", "pipe"] }
+    );
+    child = running;
+    outputBuffer = "";
+    errorBuffer = "";
+    running.stdout.setEncoding("utf8");
+    running.stderr.setEncoding("utf8");
+    running.stdout.on("data", handleOutput);
+    running.stderr.on("data", (chunk) => {
+      errorBuffer = `${errorBuffer}${chunk}`.slice(-16384);
+    });
+    running.on("error", (error) => {
+      if (child === running) {
+        child = null;
+      }
+      rejectPending(createHostError(`Failed to start Windows window host: ${error.message}`));
+    });
+    running.on("exit", (code, signal) => {
+      if (child === running) {
+        child = null;
+      }
+      if (pending.size > 0) {
+        const reason = signal ? `signal ${signal}` : `code ${code}`;
+        rejectPending(createHostError(`Windows window host exited with ${reason}`));
+      }
+    });
+    return running;
+  }
+
+  function request(operation, values = {}) {
+    let running;
+    try {
+      running = start();
+    } catch (error) {
+      return Promise.reject(error);
+    }
+
+    const id = nextRequestId;
+    nextRequestId += 1;
+    return new Promise((resolve, reject) => {
+      const key = String(id);
+      pending.set(key, { resolve, reject });
+      running.stdin.write(`${JSON.stringify({ id, operation, ...values })}\n`, "utf8", (error) => {
+        if (!error) {
+          return;
+        }
+        const queued = pending.get(key);
+        if (queued) {
+          pending.delete(key);
+          queued.reject(createHostError(`Failed to write to Windows window host: ${error.message}`));
+        }
+      });
+    });
+  }
+
+  async function dispose() {
+    if (disposal) {
+      return disposal;
+    }
+
+    disposed = true;
+    const running = child;
+    if (!running || running.exitCode !== null || running.signalCode !== null) {
+      child = null;
+      return;
+    }
+
+    disposal = new Promise((resolve) => {
+      running.once("exit", resolve);
+      running.stdin.end();
+      running.kill();
+    });
+    return disposal;
+  }
+
+  return {
+    list() {
+      return request("list");
+    },
+    activate(windowId) {
+      return request("activate", { windowId: normalizeWindowsHandle(windowId) });
+    },
+    dispose
+  };
 }
 
 const MACOS_LIST_SCRIPT = String.raw`
@@ -436,6 +657,11 @@ function normalizeWindow(value) {
   };
 }
 
+function normalizeWindows(value) {
+  const entries = Array.isArray(value) ? value : [value];
+  return entries.filter((entry) => entry?.minimized !== true).map(normalizeWindow).filter(Boolean);
+}
+
 function parseJsonWindows(output, label) {
   const text = String(output || "").trim();
   if (!text) {
@@ -449,8 +675,7 @@ function parseJsonWindows(output, label) {
     throw createCommandError(`${label} returned invalid JSON: ${error.message}`, "WINDOW_ENUMERATION_FAILED");
   }
 
-  const entries = Array.isArray(parsed) ? parsed : [parsed];
-  return entries.filter((entry) => entry?.minimized !== true).map(normalizeWindow).filter(Boolean);
+  return normalizeWindows(parsed);
 }
 
 function parseLinuxWindows(output) {
@@ -567,8 +792,13 @@ export function selectDiagnosticWindows(windows, reference) {
   );
 }
 
-export function createWindowController(platform, runner) {
+export function createWindowController(platform, runner, options = {}) {
+  const windowsHost = options.windowsHost || null;
+
   async function list() {
+    if (platform === "win32" && windowsHost) {
+      return normalizeWindows(await windowsHost.list());
+    }
     if (platform === "win32") {
       return parseJsonWindows(
         await runner("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", WINDOWS_LIST_SCRIPT], "List windows"),
@@ -630,11 +860,15 @@ export function createWindowController(platform, runner) {
 
     try {
       if (platform === "win32") {
-        await runner(
-          "powershell.exe",
-          ["-NoProfile", "-NonInteractive", "-Command", createWindowsActivateScript(window.id)],
-          "Activate window"
-        );
+        if (windowsHost) {
+          await windowsHost.activate(window.id);
+        } else {
+          await runner(
+            "powershell.exe",
+            ["-NoProfile", "-NonInteractive", "-Command", createWindowsActivateScript(window.id)],
+            "Activate window"
+          );
+        }
       } else if (platform === "darwin") {
         if (window.processId === null) {
           throw createCommandError("macOS window activation requires a process ID.", "WINDOW_ACTIVATION_FAILED");
@@ -662,5 +896,11 @@ export function createWindowController(platform, runner) {
     return resolve(window.id, "id");
   }
 
-  return { list, resolve, activate };
+  async function dispose() {
+    if (windowsHost && typeof windowsHost.dispose === "function") {
+      await windowsHost.dispose();
+    }
+  }
+
+  return { list, resolve, activate, dispose };
 }
