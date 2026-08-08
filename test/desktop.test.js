@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
@@ -1163,6 +1163,113 @@ test("activateApp failure reports matching window diagnostics", async () => {
   assert.equal(result.code, "APPLICATION_ACTIVATION_FAILED");
   for (const detail of ["Minecraft 1.21", "id=4242", "process=javaw", "bounds=100,200,800x600", `display=${TEST_WINDOW.display}`, "scale=1.5"]) {
     assert.ok(result.message.includes(detail), `Missing diagnostic: ${detail}`);
+  }
+});
+
+test("Windows activation preserves a maximized window", {
+  skip: process.platform !== "win32"
+}, async () => {
+  const title = `Robot maximized activation ${process.pid}`;
+  const form = spawn("powershell.exe", [
+    "-NoProfile",
+    "-NonInteractive",
+    "-Command",
+    `
+$ErrorActionPreference = "Stop"
+Add-Type -AssemblyName System.Windows.Forms
+$form = New-Object System.Windows.Forms.Form
+$form.Text = '${title}'
+$form.Show()
+$form.WindowState = [System.Windows.Forms.FormWindowState]::Maximized
+[System.Windows.Forms.Application]::DoEvents()
+[Console]::Out.WriteLine("READY")
+[Console]::Out.Flush()
+[System.Windows.Forms.Application]::Run($form)
+`
+  ], {
+    windowsHide: true,
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  form.stdout.setEncoding("utf8");
+  form.stderr.setEncoding("utf8");
+  let formOutput = "";
+  let formError = "";
+  form.stderr.on("data", (chunk) => {
+    formError += chunk;
+  });
+
+  const ready = new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      reject(new Error(`Timed out creating maximized test window: ${formError}`));
+    }, 5000);
+    const onData = (chunk) => {
+      formOutput += chunk;
+      if (formOutput.includes("READY")) {
+        clearTimeout(timeout);
+        form.stdout.off("data", onData);
+        resolve();
+      }
+    };
+    form.stdout.on("data", onData);
+    form.once("exit", (code) => {
+      clearTimeout(timeout);
+      reject(new Error(`Maximized test window exited with code ${code}: ${formError}`));
+    });
+  });
+
+  const host = createWindowsWindowHost();
+  try {
+    await ready;
+    let window;
+    for (let attempt = 0; attempt < 20 && !window; attempt += 1) {
+      window = (await host.list()).find((entry) => entry.title === title);
+      if (!window) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    }
+    assert.ok(window, "Maximized test window was not enumerated");
+
+    const isMaximized = () => {
+      const result = spawnSync("powershell.exe", [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        `
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class RobotWindowStateProbe
+{
+    [DllImport("user32.dll")]
+    private static extern bool IsZoomed(IntPtr hWnd);
+    public static bool IsMaximized(long value)
+    {
+        return IsZoomed(new IntPtr(value));
+    }
+}
+'@
+[RobotWindowStateProbe]::IsMaximized([long]::Parse('${window.id}'))
+`
+      ], { encoding: "utf8", windowsHide: true });
+      assert.equal(result.status, 0, result.stderr);
+      return result.stdout.trim().toLowerCase() === "true";
+    };
+
+    assert.equal(isMaximized(), true);
+    try {
+      await host.activate(window.id);
+    } catch (error) {
+      if (error.code !== "WINDOW_HOST_REQUEST_FAILED") {
+        throw error;
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.equal(isMaximized(), true);
+  } finally {
+    await host.dispose();
+    if (!form.killed) {
+      form.kill();
+    }
   }
 });
 

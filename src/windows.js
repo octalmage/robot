@@ -224,8 +224,9 @@ public static class RobotWindowApi
         {
             return false;
         }
+        const int show = 5;
         const int restore = 9;
-        ShowWindowAsync(hWnd, restore);
+        ShowWindowAsync(hWnd, IsIconic(hWnd) ? restore : show);
 
         IntPtr foreground = GetForegroundWindow();
         uint ignoredProcessId;
