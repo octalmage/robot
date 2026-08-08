@@ -314,7 +314,7 @@ test("screenshot fails when robotjs cannot save the capture", async () => {
   const exitCode = await run(["screenshot", "--output", "failed.bmp", "--json"], {
     stdout,
     robot,
-    cwd: path.join(path.sep, "tmp")
+    cwd: path.resolve(path.sep, "tmp")
   });
   const result = JSON.parse(stdout.read());
 

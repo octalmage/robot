@@ -45,7 +45,7 @@ test("findImage resolves the image path and returns screen coordinates", async (
     }
   });
 
-  const cwd = path.join(path.sep, "workspace", "robot");
+  const cwd = path.resolve(path.sep, "workspace", "robot");
   const exitCode = await run(["findImage", "assets/button.bmp", "--x", "100", "--y", "200", "--width", "300", "--height", "400", "--tolerance", "0.2", "--json"], { stdout, robot, cwd });
   const result = JSON.parse(stdout.read());
 
@@ -124,7 +124,7 @@ test("findImage retries an exact 2x screenshot at Retina scale", async () => {
   const exitCode = await run(["findImage", "retina.png", "--json"], {
     stdout,
     robot,
-    cwd: path.join(path.sep, "tmp")
+    cwd: path.resolve(path.sep, "tmp")
   });
   const result = JSON.parse(stdout.read());
 
@@ -166,7 +166,7 @@ test("clickImage reports not-found without failing the process", async () => {
   const exitCode = await run(["clickImage", "button.bmp", "--json"], {
     stdout,
     robot,
-    cwd: path.join(path.sep, "tmp")
+    cwd: path.resolve(path.sep, "tmp")
   });
   const result = JSON.parse(stdout.read());
 

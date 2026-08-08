@@ -347,11 +347,12 @@ test("external OCR receives the BMP capture path and reads bounds output", async
       }
     }
   });
+  const cwd = path.resolve(path.sep, "workspace");
 
   const exitCode = await run(["findText", "Target", "--ocr", "./fake-ocr", "--rec-langs", "en-US", "--json"], {
     stdout,
     robot,
-    cwd: "/workspace",
+    cwd,
     runProcess(command, args, label) {
       processCalls.push({ command, args, label });
       return JSON.stringify([
@@ -367,7 +368,7 @@ test("external OCR receives the BMP capture path and reads bounds output", async
 
   assert.equal(exitCode, 0);
   assert.equal(processCalls.length, 1);
-  assert.equal(processCalls[0].command, path.join("/workspace", "fake-ocr"));
+  assert.equal(processCalls[0].command, path.join(cwd, "fake-ocr"));
   assert.equal(processCalls[0].label, "OCR");
   assert.equal(processCalls[0].args[0], "--img");
   assert.match(processCalls[0].args[1], /capture\.bmp$/);
