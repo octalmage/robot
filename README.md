@@ -51,8 +51,46 @@ Run `robot --help` or `<command> --help` for the complete command API. Commands
 print TOON by default; use `--json` or
 `--format <toon|json|yaml|md|jsonl>` for another format.
 
-`type` defaults to 600 characters per minute (100 ms per character). Override
-it with `--cpm`.
+Without a config file, `type` defaults to 600 characters per minute (100 ms per
+character). Override it with `--cpm` or the user config.
+
+## User defaults and agent setup
+
+Initialize recommended defaults once per machine:
+
+```sh
+robot config --init
+robot config
+```
+
+This creates `~/.config/robot/config.json` (or
+`$XDG_CONFIG_HOME/robot/config.json`) without overwriting an existing file:
+
+```json
+{
+  "defaults": {
+    "cpm": 600,
+    "ocrModel": "small",
+    "ocrStrategy": "per-box",
+    "fuzzy": true
+  }
+}
+```
+
+`small` improves text recognition; fuzzy mode remains strict-first and only
+allows one character error when no exact, prefix, or substring match exists.
+Add `"window": "Minecraft"` only on a machine dedicated to one target.
+
+Robot uses Incur's native config support. Precedence is explicit command or
+sequence-step options, per-command config, shared user defaults, then built-in
+defaults. Use `--config <path>` for another config and `--no-config` to ignore
+the user file. Boolean settings can be negated explicitly, for example
+`--no-fuzzy`.
+
+For an unfamiliar interface, start with `robot text --window <target>`. Its
+`allItems` output reports recognized labels, confidence, bounds, and screen
+points. Prefer `clickText`, `waitForText`, or image targeting over guessed
+coordinates; use `sequence` when focus must remain stable across several steps.
 
 ## Window targeting and sequences
 
@@ -98,11 +136,11 @@ formats:
 | `assertText` | `query` | `confidence` (`0`), `exact`, `fuzzy`, OCR options |
 | `waitForText` | `query` | `timeout` (`30000`), `confidence` (`0`), `exact`, `fuzzy`, OCR options |
 
-OCR options are `ocr`, `recLangs`, `ocrModel` (`tiny`), and `ocrStrategy`
-(`per-box`). A `click`
-without coordinates clicks the current pointer. `clickText`, `assertText`, and
-`waitForText` stop the sequence when their target is not found. Print the
-complete generated JSON Schema with:
+OCR options are `ocr`, `recLangs`, `ocrModel`, and `ocrStrategy`. Sequence-level
+`cpm`, OCR, and `fuzzy` settings apply to steps that do not override them. A
+`click` without coordinates clicks the current pointer. `clickText`,
+`assertText`, and `waitForText` stop the sequence when their target is not
+found. Print the complete generated JSON Schema with:
 
 ```sh
 robot sequence --schema --format json
@@ -140,9 +178,11 @@ and the image has even dimensions, it also tries a half-size version for macOS
 Retina selection screenshots. The result's `imageScale` and `tolerance` fields
 show which match succeeded.
 
-Text results include every candidate in `matches`, with one-based indices,
-confidence, bounds, screen coordinates, and match quality. `clickText` and
-`clickWord` accept an occurrence as either a trailing integer or `--index`.
+Text match results include every candidate in `matches`, with one-based indices,
+confidence, bounds, screen coordinates, and match quality. `robot text`
+inventories every OCR item in `allItems` with the same location metadata.
+`clickText` and `clickWord` accept an occurrence as either a trailing integer or
+`--index`.
 `--index` is also available on the find and wait commands. Quote a query ending
 in a number to keep it as one argument:
 
@@ -150,13 +190,14 @@ in a number to keep it as one argument:
 robot clickText "Version 2"
 ```
 
-Use `--fuzzy` to tolerate one insertion, deletion, or substitution in queries
-of at least four characters. It also ignores punctuation inserted inside a
-word, such as `Wor-ld`. Exact, prefix, and substring matches always win.
-Equally ranked fuzzy candidates are reported as `ambiguous` and are not
-selected unless you pass an explicit occurrence. `--exact` and `--fuzzy`
-cannot be combined. Fuzzy results report `matchType`, `editDistance`, and
-`similarity`.
+Fuzzy fallback can be enabled by user config or `--fuzzy`; `--no-fuzzy`
+disables a configured default for one command. It tolerates one insertion,
+deletion, or substitution in queries of at least four characters and ignores
+punctuation inserted inside a word, such as `Wor-ld`. Exact, prefix, and
+substring matches always win. Equally ranked fuzzy candidates are reported as
+`ambiguous` and are not selected unless you pass an explicit occurrence.
+`--exact` and `--fuzzy` cannot be combined. Fuzzy results report `matchType`,
+`editDistance`, and `similarity`.
 
 Use `--x`, `--y`, `--width`, and `--height` together to limit image or text
 matching to a screen region:
@@ -171,13 +212,15 @@ multiple lines. `--confidence` sets the minimum accepted recognition
 confidence.
 
 `robot text --keep-capture` adds `captureImagePath` to each display result and
-leaves that OCR input on disk for inspection.
+leaves that OCR input on disk for inspection. Normally, use `allItems` before
+requesting a retained screenshot.
 
 ## OCR models and external backends
 
-Text commands use `ppu-paddle-ocr` with ONNX Runtime Node. The default
-`--ocr-model tiny` downloads about 6 MB on first use. Select
-`--ocr-model small` for the higher-capacity roughly 30 MB model. Detection,
+Text commands use `ppu-paddle-ocr` with ONNX Runtime Node. The built-in
+`--ocr-model tiny` downloads about 6 MB on first use; `robot config --init`
+selects the higher-capacity roughly 30 MB `small` model for subsequent commands.
+Detection,
 recognition, and dictionary files are stored in `~/.cache/ppu-paddle-ocr` and
 verified by size and SHA-256 digest before use.
 

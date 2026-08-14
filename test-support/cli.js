@@ -1,5 +1,9 @@
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { createCli } from "../src/cli.js";
+
+const EMPTY_TEST_CONFIG = path.join(os.tmpdir(), `getrobot-test-${process.pid}-no-config.json`);
 
 export function createStream() {
   let output = "";
@@ -16,7 +20,7 @@ export function createStream() {
 
 export async function run(argv, options = {}) {
   const { stdout = createStream(), ...overrides } = options;
-  const cli = createCli(overrides);
+  const cli = createCli({ configPath: EMPTY_TEST_CONFIG, ...overrides });
   let exitCode = 0;
 
   await cli.serve(argv, {

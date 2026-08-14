@@ -1,5 +1,6 @@
 import { Cli, Errors, z } from "incur";
 import packageJson from "../package.json" with { type: "json" };
+import { createRobotConfigSupport, registerConfigCommand } from "./config.js";
 import { registerDesktopCommands } from "./commands/desktop.js";
 import { registerImageCommands } from "./commands/image.js";
 import { registerTextCommands } from "./commands/text.js";
@@ -7,13 +8,19 @@ import { registerSequenceCommand } from "./commands/sequence.js";
 import { createRuntime } from "./runtime.js";
 
 const DESCRIPTION = "Single-shot desktop automation with mouse, keyboard, image matching, and OCR.";
-const SYNC_BODY = "On macOS, run `robot permissions --request` before desktop automation; user approval is still required. ROBOT_OCR_PATH selects an external OCR backend.";
+const SYNC_BODY = "On macOS, run `robot permissions --request` before desktop automation; user approval is still required. In unfamiliar interfaces, inventory visible controls with `robot text --window <target>` and prefer text/image targeting over guessed coordinates. `robot config --init` enables the recommended Small OCR plus strict-first fuzzy fallback. ROBOT_OCR_PATH selects an external OCR backend.";
 
 export function createCli(overrides = {}) {
+  const configSupport = createRobotConfigSupport({ path: overrides.configPath });
   const cli = Cli.create("robot", {
     description: DESCRIPTION,
     version: packageJson.version,
     update: false,
+    config: {
+      flag: "config",
+      files: configSupport.files,
+      loader: configSupport.loader
+    },
     env: z.object({
       ROBOT_OCR_PATH: z.string().optional().describe("External OCR executable path or command")
     }),
@@ -58,6 +65,7 @@ export function createCli(overrides = {}) {
     }
   });
 
+  registerConfigCommand(cli, configSupport);
   registerDesktopCommands(cli);
   registerImageCommands(cli);
   registerTextCommands(cli);

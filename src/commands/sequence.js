@@ -5,6 +5,7 @@ import { observeText, textBackendOptionsShape } from "./text.js";
 import {
   clickOptionsShape,
   cpmSchema,
+  cpmValueSchema,
   DEFAULT_CPM,
   createCommandError,
   indexSchema,
@@ -28,7 +29,7 @@ const keyTapStepSchema = z.object({
 const typeStepSchema = z.object({
   command: z.literal("type"),
   text: z.string().min(1).describe("Text to type"),
-  cpm: cpmSchema.optional()
+  cpm: cpmValueSchema.optional()
 });
 
 const clickStepSchema = z.object({
@@ -94,6 +95,9 @@ const sequenceResultSchema = z.object({
   editDistance: z.number().int().nullable().optional().describe("Selected fuzzy edit distance"),
   similarity: z.number().nullable().optional().describe("Selected fuzzy similarity"),
   ambiguous: z.boolean().optional().describe("Whether fuzzy matches were ambiguous"),
+  ocrModel: z.enum(["tiny", "small"]).optional().describe("Applied OCR model"),
+  ocrStrategy: z.enum(["per-box", "per-line", "cross-line"]).optional().describe("Applied OCR strategy"),
+  fuzzy: z.boolean().optional().describe("Whether fuzzy fallback was enabled"),
   candidateCount: z.number().int().optional().describe("Number of matching OCR candidates"),
   attempts: z.number().int().optional().describe("Number of wait observations"),
   elapsedMs: z.number().optional().describe("Elapsed wait time")
@@ -171,6 +175,30 @@ function resolveSteps(runtime, options) {
   }
   return { source: input, steps: parseSteps(serialized, input) };
 }
+function applySequenceDefaults(step, options) {
+  if (step.command === "type") {
+    return {
+      ...step,
+      cpm: step.cpm ?? options.cpm ?? DEFAULT_CPM
+    };
+  }
+
+  if (!["assertText", "waitForText", "clickText"].includes(step.command)) {
+    return step;
+  }
+
+  const resolved = { ...step };
+  for (const name of ["ocr", "recLangs", "ocrModel", "ocrStrategy"]) {
+    if (resolved[name] === undefined && options[name] !== undefined) {
+      resolved[name] = options[name];
+    }
+  }
+  if (resolved.fuzzy === undefined && !resolved.exact && options.fuzzy !== undefined) {
+    resolved.fuzzy = options.fuzzy;
+  }
+  return resolved;
+}
+
 
 function summarizeTextStep(index, command, query, result, waitResult) {
   return {
@@ -180,6 +208,9 @@ function summarizeTextStep(index, command, query, result, waitResult) {
     found: result.found,
     matchedText: result.text,
     confidence: result.confidence,
+    ocrModel: result.ocrModel,
+    ocrStrategy: result.ocrStrategy,
+    fuzzy: result.fuzzy,
     matchType: result.matchType,
     editDistance: result.editDistance,
     similarity: result.similarity,
@@ -269,7 +300,10 @@ export function registerSequenceCommand(cli) {
       steps: z.union([z.string(), sequenceStepsSchema]).optional()
         .describe("JSON file, '-' for stdin, or an MCP array of steps"),
       stepsJson: z.string().optional().describe("Inline JSON array of steps"),
-      captureOnFailure: z.boolean().optional().describe("Save a managed window capture when a step fails")
+      captureOnFailure: z.boolean().optional().describe("Save a managed window capture when a step fails"),
+      cpm: cpmSchema,
+      fuzzy: z.boolean().optional().describe("Default strict-first fuzzy fallback for text steps"),
+      ...textBackendOptionsShape
     }),
     output: z.object({
       window: windowSchema.describe("Activated target window"),
@@ -292,7 +326,7 @@ export function registerSequenceCommand(cli) {
       const results = [];
 
       for (let offset = 0; offset < resolved.steps.length; offset += 1) {
-        const step = resolved.steps[offset];
+        const step = applySequenceDefaults(resolved.steps[offset], c.options);
         try {
           results.push(await executeStep(runtime, robot, step, window, offset + 1));
         } catch (error) {

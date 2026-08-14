@@ -28,10 +28,10 @@ const MIN_FUZZY_QUERY_LENGTH = 4;
 export const textBackendOptionsShape = {
   ocr: z.string().optional().describe("External OCR executable path or command"),
   recLangs: z.string().optional().describe("OCR recognition languages"),
-  ocrModel: z.enum(["tiny", "small"]).default("tiny").describe("Paddle OCR model size"),
+  ocrModel: z.enum(["tiny", "small"]).optional().describe("Paddle OCR model size; built-in default: tiny"),
   ocrStrategy: z.enum(["per-box", "per-line", "cross-line"])
-    .default("per-box")
-    .describe("Paddle OCR recognition strategy")
+    .optional()
+    .describe("Paddle OCR recognition strategy; built-in default: per-box")
 };
 
 const textMatchOptions = z.object({
@@ -64,6 +64,9 @@ const matchEntrySchema = z.object({
 
 const textMatchOutput = z.object({
   query: z.string().describe("Normalized command query"),
+  ocrModel: z.enum(["tiny", "small"]).describe("Applied Paddle OCR model size"),
+  ocrStrategy: z.enum(["per-box", "per-line", "cross-line"]).describe("Applied OCR recognition strategy"),
+  fuzzy: z.boolean().describe("Whether strict-first fuzzy fallback was enabled"),
   found: z.boolean().describe("Whether a matching occurrence was found"),
   ambiguous: z.boolean().describe("Whether equally ranked fuzzy matches prevented automatic selection"),
   text: z.string().nullable().describe("Selected recognized text"),
@@ -533,6 +536,9 @@ function resolveTextQuery(parts, index, supportsTrailingIndex) {
 function buildTextResult(query, result, options) {
   const output = {
     query,
+    ocrModel: options.ocrModel ?? "tiny",
+    ocrStrategy: options.ocrStrategy ?? "per-box",
+    fuzzy: !!options.fuzzy,
     found: !!result.selected,
     ambiguous: result.ambiguous,
     text: result.selected ? result.selected.text : null,
@@ -634,10 +640,19 @@ function createTextMatchCommand({ description, click = false, wait = false }) {
 }
 
 export function registerTextCommands(cli) {
+  const inventoryItemSchema = z.object({
+    text: z.string().describe("Recognized text"),
+    confidence: z.number().describe("OCR confidence"),
+    bounds: rectSchema.describe("Capture-relative text bounds"),
+    screenPoint: pointSchema.describe("Text center in screen coordinates")
+  });
+
   cli.command("text", {
-    description: "Recognize text across the current displays.",
+    description: "Inventory visible text, bounds, and screen points to identify the current UI before acting.",
     options: z.object({ ...textBackendOptionsShape, ...windowOptionShape, keepCapture: z.boolean().optional().describe("Keep each OCR capture") }),
     output: z.object({
+      ocrModel: z.enum(["tiny", "small"]).describe("Applied Paddle OCR model size"),
+      ocrStrategy: z.enum(["per-box", "per-line", "cross-line"]).describe("Applied OCR recognition strategy"),
       displays: z.array(z.object({
         displayId: z.number().int().describe("One-based display index"),
         screenX: z.number().describe("Display left screen coordinate"),
@@ -645,9 +660,13 @@ export function registerTextCommands(cli) {
         width: z.number().describe("Display capture width"),
         height: z.number().describe("Display capture height"),
         text: z.array(z.string()).describe("Recognized display text"),
+        items: z.array(inventoryItemSchema).describe("Recognized text with locations"),
         captureImagePath: z.string().optional().describe("Retained OCR capture path")
       })).describe("Per-display OCR results"),
-      allText: z.array(z.string()).describe("Recognized text across all displays")
+      allText: z.array(z.string()).describe("Recognized text across all displays"),
+      allItems: z.array(inventoryItemSchema.extend({
+        displayId: z.number().int().describe("One-based display index")
+      })).describe("Recognized text and locations across all displays")
     }),
     async run(c) {
       const runtime = c.var.runtime;
@@ -656,6 +675,7 @@ export function registerTextCommands(cli) {
       const searchRects = getTextSearchRects(robot, rect, !!c.options.window);
       const displays = [];
       const allText = [];
+      const allItems = [];
 
       for (let displayIndex = 0; displayIndex < searchRects.length; displayIndex += 1) {
         const capture = captureWithRect(robot, searchRects[displayIndex]);
@@ -665,16 +685,21 @@ export function registerTextCommands(cli) {
         try {
           const captureInput = saveCaptureForOcr(capture, captureTempDir);
           const ocrItems = await performOcr(captureInput, c.options, runtime);
-          const text = ocrItems
-            .map((item) => item.text)
-            .filter((value) => typeof value === "string" && value.length > 0);
+          const items = ocrItems.map((item) => ({
+            text: item.text,
+            confidence: item.confidence,
+            bounds: item.bounds,
+            screenPoint: getScreenPointForBounds(capture, item.bounds)
+          }));
+          const text = items.map((item) => item.text);
           const display = {
             displayId: displayIndex + 1,
             screenX: capture.screenX || 0,
             screenY: capture.screenY || 0,
             width: capture.width,
             height: capture.height,
-            text
+            text,
+            items
           };
 
           if (c.options.keepCapture) {
@@ -684,6 +709,7 @@ export function registerTextCommands(cli) {
 
           displays.push(display);
           allText.push(...text);
+          allItems.push(...items.map((item) => ({ ...item, displayId: displayIndex + 1 })));
         } finally {
           if (!retained) {
             fs.rmSync(captureTempDir, { recursive: true, force: true });
@@ -691,7 +717,13 @@ export function registerTextCommands(cli) {
         }
       }
 
-      return { displays, allText };
+      return {
+        ocrModel: c.options.ocrModel ?? "tiny",
+        ocrStrategy: c.options.ocrStrategy ?? "per-box",
+        displays,
+        allText,
+        allItems
+      };
     }
   });
 

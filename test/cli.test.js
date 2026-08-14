@@ -8,6 +8,7 @@ test("generated root help lists public commands and integrations", async () => {
     "windows",
     "activateWindow",
     "permissions",
+    "config",
     "screenshot",
     "click",
     "moveMouse",
@@ -69,7 +70,7 @@ test("clickText schema exposes argument option and output contracts", async () =
   for (const option of ["index", "window", "keepCapture", "recLangs", "ocrModel", "ocrStrategy", "fuzzy", "button"]) {
     assert.ok(schema.options.properties[option]);
   }
-  for (const field of ["query", "matches", "capture", "matchType", "editDistance", "similarity", "ambiguous", "button", "double"]) {
+  for (const field of ["query", "matches", "capture", "matchType", "editDistance", "similarity", "ambiguous", "ocrModel", "ocrStrategy", "fuzzy", "button", "double"]) {
     assert.ok(schema.output.properties[field]);
   }
 });
@@ -174,6 +175,9 @@ test("sequence schema documents clickText step fields", async () => {
   assert.ok(clickText.required.includes("query"));
   for (const field of ["index", "confidence", "exact", "fuzzy", "ocrModel", "ocrStrategy", "button", "double"]) {
     assert.ok(clickText.properties[field]);
+  }
+  for (const field of ["cpm", "fuzzy", "ocrModel", "ocrStrategy"]) {
+    assert.ok(schema.options.properties[field]);
   }
   assert.ok(schema.output.properties.results.items.properties.command.enum.includes("clickText"));
 });
