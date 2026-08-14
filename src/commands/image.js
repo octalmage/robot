@@ -171,25 +171,28 @@ function createImageCommand({ description, click = false, wait = false }) {
       const runtime = c.var.runtime;
       const robot = runtime.getRobot();
       const image = resolveInputPath(runtime.cwd, c.args.image, "image path");
-      const { rect } = await resolveWindowScope(runtime, {}, c.options, { activate: true });
       const needle = robot.image.load(image);
       const searchOptions = c.options.tolerance === undefined
         ? {}
         : { tolerance: c.options.tolerance };
       const matchImage = createImageMatcher(needle, searchOptions);
+      const observe = async () => {
+        const { rect } = await resolveWindowScope(runtime, {}, c.options, { activate: true });
+        return collectImageMatch(robot, matchImage, rect);
+      };
       let observation;
       let waitResult;
 
       if (wait) {
         waitResult = await waitForObservation(
-          () => collectImageMatch(robot, matchImage, rect),
+          observe,
           (value) => !!value.match,
           c.options,
           runtime
         );
         observation = waitResult.value;
       } else {
-        observation = collectImageMatch(robot, matchImage, rect);
+        observation = await observe();
       }
 
       if (click && observation.screenPoint) {

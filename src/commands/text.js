@@ -39,7 +39,7 @@ const textMatchOptions = z.object({
   ...windowOptionShape,
   confidence: z.number().default(0).describe("Minimum OCR confidence"),
   index: indexSchema,
-  exact: z.boolean().optional().describe("Require an exact text match"),
+  exact: z.boolean().optional().describe("Require an exact text match and disable fuzzy fallback"),
   fuzzy: z.boolean().optional().describe("Allow one OCR character error in queries of four or more characters"),
   ...textBackendOptionsShape,
   keepCapture: z.boolean().optional().describe("Keep the selected OCR capture")
@@ -238,9 +238,6 @@ function rankTextMatches(query, ocrItems, options) {
   if (!normalizedQuery) {
     throw createCommandError("Text query cannot be empty.", "INVALID_ARGUMENT");
   }
-  if (options.exact && options.fuzzy) {
-    throw createCommandError("--exact and --fuzzy cannot be combined.", "INVALID_ARGUMENT");
-  }
 
   for (const observation of observations) {
     const normalizedObservation = normalizeText(observation.text);
@@ -279,7 +276,7 @@ function rankTextMatches(query, ocrItems, options) {
       continue;
     }
 
-    if (!options.fuzzy) {
+    if (!options.fuzzy || options.exact) {
       continue;
     }
 
@@ -593,17 +590,21 @@ function createTextMatchCommand({ description, click = false, wait = false }) {
       const resolved = resolveTextQuery(c.args.query, c.options.index, click);
       const searchOptions = {
         ...c.options,
+        fuzzy: c.options.exact ? false : c.options.fuzzy,
         index: resolved.index,
         selectionExplicit: resolved.index !== undefined,
         clipToDisplays: !!c.options.window
       };
-      const { rect } = await resolveWindowScope(runtime, {}, searchOptions, { activate: true });
+      const observe = async () => {
+        const { rect } = await resolveWindowScope(runtime, {}, searchOptions, { activate: true });
+        return collectTextMatch(robot, resolved.query, rect, searchOptions, runtime);
+      };
       let textResult;
       let waitResult;
 
       if (wait) {
         waitResult = await waitForObservation(
-          () => collectTextMatch(robot, resolved.query, rect, searchOptions, runtime),
+          observe,
           (value) => !!value.selected,
           searchOptions,
           runtime,
@@ -611,7 +612,7 @@ function createTextMatchCommand({ description, click = false, wait = false }) {
         );
         textResult = waitResult.value;
       } else {
-        textResult = await collectTextMatch(robot, resolved.query, rect, searchOptions, runtime);
+        textResult = await observe();
       }
 
       try {

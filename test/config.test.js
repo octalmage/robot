@@ -109,6 +109,18 @@ test("shared config defaults apply to OCR and per-command then CLI options take 
   assert.equal(configured.ocrModel, "small");
   assert.equal(configured.ocrStrategy, "per-line");
 
+  const exactStdout = createStream();
+  assert.equal(await run(["clickText", "Gane", "--exact", "--format", "json"], {
+    stdout: exactStdout,
+    configPath,
+    robot,
+    ocrBackend
+  }), 0);
+  const exact = JSON.parse(exactStdout.read());
+  assert.equal(exact.found, true);
+  assert.equal(exact.matchType, "exact");
+  assert.equal(exact.fuzzy, false);
+
   const explicitStdout = createStream();
   assert.equal(await run([
     "findText", "Game", "--no-fuzzy", "--ocr-model", "tiny", "--ocr-strategy", "per-box", "--format", "json"
@@ -177,6 +189,7 @@ test("sequence inherits configured window, typing, and OCR defaults while step o
   const steps = JSON.stringify([
     { command: "type", text: "hello" },
     { command: "assertText", query: "Game" },
+    { command: "assertText", query: "Gane", exact: true, fuzzy: true },
     { command: "type", text: "fast", cpm: 1200 }
   ]);
   const stdout = createStream();
@@ -202,6 +215,9 @@ test("sequence inherits configured window, typing, and OCR defaults while step o
     ["resolve", "Minecraft"],
     ["activate", TEST_WINDOW.id],
     ["type", "hello", 700],
+    ["activate", TEST_WINDOW.id],
+    ["activate", TEST_WINDOW.id],
+    ["activate", TEST_WINDOW.id],
     ["type", "fast", 1200]
   ]);
   assert.equal(result.results[1].found, true);
@@ -209,6 +225,9 @@ test("sequence inherits configured window, typing, and OCR defaults while step o
   assert.equal(result.results[1].fuzzy, true);
   assert.equal(result.results[1].ocrModel, "small");
   assert.equal(result.results[1].ocrStrategy, "per-line");
+  assert.equal(result.results[2].found, true);
+  assert.equal(result.results[2].matchType, "exact");
+  assert.equal(result.results[2].fuzzy, false);
 });
 
 test("text inventories recognized labels with bounds and screen points", async () => {

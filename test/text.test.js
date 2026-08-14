@@ -417,6 +417,87 @@ test("waitForText performs the capture and retry loop in one command", async () 
   assert.equal(result.timedOut, false);
 });
 
+test("window-scoped polling reactivates its target before every capture", async () => {
+  const stdout = createStream();
+  const events = [];
+  let clock = 0;
+  let overlayVisible = false;
+  let capturedOverlay = false;
+  const window = {
+    id: "4242",
+    title: "Minecraft 1.21",
+    process: "javaw",
+    processId: 1234,
+    bounds: { x: 100, y: 200, width: 800, height: 600 },
+    display: "\\\\.\\DISPLAY1",
+    scale: 1.5
+  };
+  const robot = createRobot({
+    screen: {
+      capture(...args) {
+        events.push(["capture", ...args]);
+        capturedOverlay = overlayVisible;
+        return createTextCapture({
+          width: window.bounds.width,
+          height: window.bounds.height,
+          screenX: window.bounds.x,
+          screenY: window.bounds.y
+        });
+      }
+    }
+  });
+
+  const exitCode = await run([
+    "waitForText",
+    "Press T",
+    "--window",
+    window.id,
+    "--timeout",
+    "100",
+    "--json"
+  ], {
+    stdout,
+    robot,
+    now: () => clock,
+    sleep: async (duration) => {
+      clock += duration;
+      overlayVisible = true;
+    },
+    windowController: {
+      async resolve(reference) {
+        events.push(["resolve", reference]);
+        return window;
+      },
+      async activate(selected) {
+        events.push(["activate", selected.id]);
+        overlayVisible = false;
+        return selected;
+      }
+    },
+    ocrBackend: {
+      async recognize() {
+        return capturedOverlay
+          ? [{ text: "Press T", confidence: 1, bounds: { x: 10, y: 10, width: 60, height: 20 } }]
+          : [];
+      }
+    }
+  });
+  const result = JSON.parse(stdout.read());
+
+  assert.equal(exitCode, 0);
+  assert.equal(result.found, false);
+  assert.equal(result.timedOut, true);
+  assert.equal(result.attempts, 2);
+  assert.deepEqual(events, [
+    ["resolve", window.id],
+    ["activate", window.id],
+    ["capture", 100, 200, 800, 600],
+    ["resolve", window.id],
+    ["activate", window.id],
+    ["capture", 100, 200, 800, 600]
+  ]);
+});
+
 test("findText returns every instance and clickText can select the second one positionally", async () => {
   const findStdout = createStream();
   const clickStdout = createStream();
@@ -678,7 +759,7 @@ test("ambiguous fuzzy matches require an explicit occurrence before clicking", a
   assert.deepEqual(mouseMoves, [{ x: 120, y: 20 }]);
 });
 
-test("exact and fuzzy text matching cannot be combined", async () => {
+test("--exact disables fuzzy fallback when both modes are enabled", async () => {
   const stdout = createStream();
   const robot = createRobot({
     screen: {
@@ -703,9 +784,10 @@ test("exact and fuzzy text matching cannot be combined", async () => {
   });
   const result = JSON.parse(stdout.read());
 
-  assert.equal(exitCode, 1);
-  assert.equal(result.code, "INVALID_ARGUMENT");
-  assert.match(result.message, /--exact and --fuzzy/);
+  assert.equal(exitCode, 0);
+  assert.equal(result.found, true);
+  assert.equal(result.matchType, "exact");
+  assert.equal(result.fuzzy, false);
 });
 
 test("a quoted query ending in a number remains part of the text", async () => {

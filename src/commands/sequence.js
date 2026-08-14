@@ -42,7 +42,7 @@ const clickStepSchema = z.object({
 const textStepOptionsShape = {
   query: z.string().min(1).describe("Text to find"),
   confidence: z.number().default(0).describe("Minimum OCR confidence"),
-  exact: z.boolean().optional().describe("Require an exact text match"),
+  exact: z.boolean().optional().describe("Require an exact text match and disable fuzzy fallback"),
   fuzzy: z.boolean().optional().describe("Allow one OCR character error in queries of four or more characters"),
   ...textBackendOptionsShape
 };
@@ -120,12 +120,6 @@ function validateSteps(parsed, source) {
         "INVALID_SEQUENCE"
       );
     }
-    if ("fuzzy" in step && step.exact && step.fuzzy) {
-      throw createCommandError(
-        `Invalid sequence steps in ${source}: ${index} cannot combine exact and fuzzy text matching.`,
-        "INVALID_SEQUENCE"
-      );
-    }
   }
 
   return validation.data;
@@ -195,6 +189,9 @@ function applySequenceDefaults(step, options) {
   }
   if (resolved.fuzzy === undefined && !resolved.exact && options.fuzzy !== undefined) {
     resolved.fuzzy = options.fuzzy;
+  }
+  if (resolved.exact) {
+    resolved.fuzzy = false;
   }
   return resolved;
 }
@@ -277,8 +274,16 @@ async function executeStep(runtime, robot, step, window, index) {
     return summarizeTextStep(index, step.command, step.query, result);
   }
 
+  let activeWindow = window;
+  let attempt = 0;
   const waitResult = await waitForObservation(
-    () => observeText(runtime, step.query, window.bounds, step),
+    async () => {
+      if (attempt > 0) {
+        activeWindow = await runtime.getWindowController().activate(activeWindow);
+      }
+      attempt += 1;
+      return observeText(runtime, step.query, activeWindow.bounds, step);
+    },
     (result) => result.found,
     step,
     runtime
@@ -294,7 +299,7 @@ async function executeStep(runtime, robot, step, window, index) {
 
 export function registerSequenceCommand(cli) {
   cli.command("sequence", {
-    description: "Run input and text-verification steps in one focused process.",
+    description: "Run input and text-verification steps while reasserting target focus.",
     options: z.object({
       window: z.string().describe("Target window ID, title, or process name"),
       steps: z.union([z.string(), sequenceStepsSchema]).optional()
@@ -315,19 +320,20 @@ export function registerSequenceCommand(cli) {
       { options: { window: true, steps: true } },
       { options: { window: true, "steps-json": true } }
     ],
-    hint: "Click coordinates are window-relative. Steps support keyTap, type, click, clickText, assertText, and waitForText.",
+    hint: "Target focus is confirmed before every step and polling retry. Click coordinates are window-relative. Steps support keyTap, type, click, clickText, assertText, and waitForText.",
     async run(c) {
       const runtime = c.var.runtime;
       const resolved = resolveSteps(runtime, c.options);
       const controller = runtime.getWindowController();
       const target = await controller.resolve(c.options.window);
-      const window = await controller.activate(target);
+      let window = target;
       const robot = runtime.getRobot();
       const results = [];
 
       for (let offset = 0; offset < resolved.steps.length; offset += 1) {
         const step = applySequenceDefaults(resolved.steps[offset], c.options);
         try {
+          window = await controller.activate(window);
           results.push(await executeStep(runtime, robot, step, window, offset + 1));
         } catch (error) {
           let captureMessage = "";

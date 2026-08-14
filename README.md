@@ -109,9 +109,12 @@ and text commands. References can be a window ID, title, process, or application
 class. Exact process/application matches take precedence over title substrings.
 Ambiguous references fail and list the matching window IDs. Bounds are refreshed
 after activation, and text scopes are clipped to visible display areas.
+Window-scoped polling reactivates the target immediately before every capture;
+these captures represent the visible window rectangle, not an occlusion-free
+offscreen framebuffer.
 
-`sequence` focuses its target once, then runs input and OCR verification steps
-in the same process:
+`sequence` reasserts target focus before every input or OCR step and each
+polling retry:
 
 ```json
 [
@@ -196,8 +199,8 @@ deletion, or substitution in queries of at least four characters and ignores
 punctuation inserted inside a word, such as `Wor-ld`. Exact, prefix, and
 substring matches always win. Equally ranked fuzzy candidates are reported as
 `ambiguous` and are not selected unless you pass an explicit occurrence.
-`--exact` and `--fuzzy` cannot be combined. Fuzzy results report `matchType`,
-`editDistance`, and `similarity`.
+`--exact` disables fuzzy fallback, including a configured default. Fuzzy
+results report `matchType`, `editDistance`, and `similarity`.
 
 Use `--x`, `--y`, `--width`, and `--height` together to limit image or text
 matching to a screen region:

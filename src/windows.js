@@ -239,7 +239,17 @@ public static class RobotWindowApi
         try
         {
             BringWindowToTop(hWnd);
-            return SetForegroundWindow(hWnd) || GetForegroundWindow() == hWnd;
+            SetForegroundWindow(hWnd);
+            for (int attempt = 0; attempt < 50; attempt += 1)
+            {
+                if (GetForegroundWindow() == hWnd)
+                {
+                    System.Threading.Thread.Sleep(50);
+                    return true;
+                }
+                System.Threading.Thread.Sleep(10);
+            }
+            return false;
         }
         finally
         {

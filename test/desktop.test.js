@@ -840,7 +840,9 @@ test("sequence keeps focus and input steps in one runtime", async (t) => {
     ["resolve", "Minecraft"],
     ["activate", TEST_WINDOW.id],
     ["keyTap", "a", ["control", "shift"]],
+    ["activate", TEST_WINDOW.id],
     ["type", "cycle complete", 6000],
+    ["activate", TEST_WINDOW.id],
     ["move", 110, 220],
     ["click", "right", true]
   ]);
@@ -1208,7 +1210,7 @@ $form.WindowState = [System.Windows.Forms.FormWindowState]::Maximized
   const ready = new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
       reject(new Error(`Timed out creating maximized test window: ${formError}`));
-    }, 5000);
+    }, 10000);
     const onData = (chunk) => {
       formOutput += chunk;
       if (formOutput.includes("READY")) {
