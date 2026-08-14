@@ -5,6 +5,7 @@ import { observeText, textBackendOptionsShape } from "./text.js";
 import {
   clickOptionsShape,
   cpmSchema,
+  DEFAULT_CPM,
   createCommandError,
   indexSchema,
   performClick,
@@ -41,6 +42,7 @@ const textStepOptionsShape = {
   query: z.string().min(1).describe("Text to find"),
   confidence: z.number().default(0).describe("Minimum OCR confidence"),
   exact: z.boolean().optional().describe("Require an exact text match"),
+  fuzzy: z.boolean().optional().describe("Allow one OCR character error in queries of four or more characters"),
   ...textBackendOptionsShape
 };
 
@@ -88,6 +90,10 @@ const sequenceResultSchema = z.object({
   found: z.boolean().optional().describe("Whether matching text was found"),
   matchedText: z.string().nullable().optional().describe("Matched OCR text"),
   confidence: z.number().nullable().optional().describe("Matched OCR confidence"),
+  matchType: z.enum(["exact", "startsWith", "contains", "fuzzy"]).nullable().optional().describe("Selected text match type"),
+  editDistance: z.number().int().nullable().optional().describe("Selected fuzzy edit distance"),
+  similarity: z.number().nullable().optional().describe("Selected fuzzy similarity"),
+  ambiguous: z.boolean().optional().describe("Whether fuzzy matches were ambiguous"),
   candidateCount: z.number().int().optional().describe("Number of matching OCR candidates"),
   attempts: z.number().int().optional().describe("Number of wait observations"),
   elapsedMs: z.number().optional().describe("Elapsed wait time")
@@ -107,6 +113,12 @@ function validateSteps(parsed, source) {
     if (step.command === "click" && (step.x === undefined) !== (step.y === undefined)) {
       throw createCommandError(
         `Invalid sequence steps in ${source}: ${index}.click expects neither coordinate or both x and y.`,
+        "INVALID_SEQUENCE"
+      );
+    }
+    if ("fuzzy" in step && step.exact && step.fuzzy) {
+      throw createCommandError(
+        `Invalid sequence steps in ${source}: ${index} cannot combine exact and fuzzy text matching.`,
         "INVALID_SEQUENCE"
       );
     }
@@ -168,6 +180,10 @@ function summarizeTextStep(index, command, query, result, waitResult) {
     found: result.found,
     matchedText: result.text,
     confidence: result.confidence,
+    matchType: result.matchType,
+    editDistance: result.editDistance,
+    similarity: result.similarity,
+    ambiguous: result.ambiguous,
     candidateCount: result.candidateCount,
     ...(waitResult ? {
       attempts: waitResult.attempts,
@@ -184,7 +200,7 @@ async function executeStep(runtime, robot, step, window, index) {
   }
 
   if (step.command === "type") {
-    const cpm = step.cpm ?? 12000;
+    const cpm = step.cpm ?? DEFAULT_CPM;
     performType(robot, step.text, cpm);
     return { index, command: step.command, text: step.text, cpm };
   }

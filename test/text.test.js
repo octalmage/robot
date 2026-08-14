@@ -513,6 +513,201 @@ test("findText narrows a prefix match to the queried text", async () => {
   assert.deepEqual(result.screenPoint, { x: 35, y: 15 });
 });
 
+test("fuzzy text matching is opt-in and reports one-character OCR recovery", async () => {
+  const robot = createRobot({
+    screen: {
+      capture() {
+        return createTextCapture({ width: 200, height: 100 });
+      }
+    }
+  });
+  const ocrBackend = {
+    async recognize() {
+      return [{
+        text: "Gane",
+        confidence: 0.9,
+        bounds: { x: 20, y: 10, width: 40, height: 20 }
+      }];
+    }
+  };
+  const strictStdout = createStream();
+  const fuzzyStdout = createStream();
+
+  const strictExitCode = await run(["findText", "Game", "--json"], {
+    stdout: strictStdout,
+    robot,
+    ocrBackend
+  });
+  const fuzzyExitCode = await run(["findText", "Game", "--fuzzy", "--json"], {
+    stdout: fuzzyStdout,
+    robot,
+    ocrBackend
+  });
+  const strictResult = JSON.parse(strictStdout.read());
+  const fuzzyResult = JSON.parse(fuzzyStdout.read());
+
+  assert.equal(strictExitCode, 0);
+  assert.equal(fuzzyExitCode, 0);
+  assert.equal(strictResult.found, false);
+  assert.equal(strictResult.candidateCount, 0);
+  assert.equal(fuzzyResult.found, true);
+  assert.equal(fuzzyResult.ambiguous, false);
+  assert.equal(fuzzyResult.matchType, "fuzzy");
+  assert.equal(fuzzyResult.editDistance, 1);
+  assert.equal(fuzzyResult.similarity, 0.75);
+});
+
+test("fuzzy matching repairs in-word punctuation but remains strict at its boundaries", async () => {
+  const robot = createRobot({
+    screen: {
+      capture() {
+        return createTextCapture({ width: 200, height: 100 });
+      }
+    }
+  });
+
+  async function find(query, recognizedText) {
+    const stdout = createStream();
+    const exitCode = await run(["findText", query, "--fuzzy", "--json"], {
+      stdout,
+      robot,
+      ocrBackend: {
+        async recognize() {
+          return [{
+            text: recognizedText,
+            confidence: 1,
+            bounds: { x: 10, y: 10, width: 80, height: 20 }
+          }];
+        }
+      }
+    });
+    assert.equal(exitCode, 0);
+    return JSON.parse(stdout.read());
+  }
+
+  const punctuation = await find("World", "Wor-ld");
+  const short = await find("New", "Nev");
+  const twoEdits = await find("Seed", "Sad");
+
+  assert.equal(punctuation.found, true);
+  assert.equal(punctuation.matchType, "fuzzy");
+  assert.equal(punctuation.editDistance, 0);
+  assert.equal(punctuation.similarity, 1);
+  assert.equal(short.found, false);
+  assert.equal(twoEdits.found, false);
+});
+
+test("strict text matches outrank fuzzy candidates", async () => {
+  const stdout = createStream();
+  const robot = createRobot({
+    screen: {
+      capture() {
+        return createTextCapture({ width: 200, height: 100 });
+      }
+    }
+  });
+
+  const exitCode = await run(["findText", "Game", "--fuzzy", "--json"], {
+    stdout,
+    robot,
+    ocrBackend: {
+      async recognize() {
+        return [
+          { text: "Gane", confidence: 1, bounds: { x: 10, y: 10, width: 40, height: 20 } },
+          { text: "Game", confidence: 0.8, bounds: { x: 100, y: 10, width: 40, height: 20 } }
+        ];
+      }
+    }
+  });
+  const result = JSON.parse(stdout.read());
+
+  assert.equal(exitCode, 0);
+  assert.equal(result.found, true);
+  assert.equal(result.matchType, "exact");
+  assert.equal(result.candidateCount, 1);
+  assert.equal(result.matches[0].text, "Game");
+  assert.equal(result.editDistance, null);
+  assert.equal(result.similarity, null);
+});
+
+test("ambiguous fuzzy matches require an explicit occurrence before clicking", async () => {
+  const mouseMoves = [];
+  const robot = createRobot({
+    screen: {
+      capture() {
+        return createTextCapture({ width: 200, height: 100 });
+      }
+    },
+    moveMouseSmooth(x, y) {
+      mouseMoves.push({ x, y });
+    }
+  });
+  const ocrBackend = {
+    async recognize() {
+      return [
+        { text: "Gane", confidence: 1, bounds: { x: 10, y: 10, width: 40, height: 20 } },
+        { text: "Gape", confidence: 1, bounds: { x: 100, y: 10, width: 40, height: 20 } }
+      ];
+    }
+  };
+  const ambiguousStdout = createStream();
+  const selectedStdout = createStream();
+
+  const ambiguousExitCode = await run(["clickText", "Game", "--fuzzy", "--json"], {
+    stdout: ambiguousStdout,
+    robot,
+    ocrBackend
+  });
+  const selectedExitCode = await run(["clickText", "Game", "2", "--fuzzy", "--json"], {
+    stdout: selectedStdout,
+    robot,
+    ocrBackend
+  });
+  const ambiguousResult = JSON.parse(ambiguousStdout.read());
+  const selectedResult = JSON.parse(selectedStdout.read());
+
+  assert.equal(ambiguousExitCode, 0);
+  assert.equal(selectedExitCode, 0);
+  assert.equal(ambiguousResult.found, false);
+  assert.equal(ambiguousResult.ambiguous, true);
+  assert.equal(ambiguousResult.candidateCount, 2);
+  assert.equal(ambiguousResult.selectedIndex, null);
+  assert.equal(selectedResult.found, true);
+  assert.equal(selectedResult.ambiguous, false);
+  assert.equal(selectedResult.selectedIndex, 2);
+  assert.deepEqual(mouseMoves, [{ x: 120, y: 20 }]);
+});
+
+test("exact and fuzzy text matching cannot be combined", async () => {
+  const stdout = createStream();
+  const robot = createRobot({
+    screen: {
+      capture() {
+        return createTextCapture();
+      }
+    }
+  });
+
+  const exitCode = await run(["findText", "Game", "--exact", "--fuzzy", "--json"], {
+    stdout,
+    robot,
+    ocrBackend: {
+      async recognize() {
+        return [{
+          text: "Game",
+          confidence: 1,
+          bounds: { x: 10, y: 10, width: 40, height: 20 }
+        }];
+      }
+    }
+  });
+  const result = JSON.parse(stdout.read());
+
+  assert.equal(exitCode, 1);
+  assert.equal(result.code, "INVALID_ARGUMENT");
+  assert.match(result.message, /--exact and --fuzzy/);
+});
+
 test("a quoted query ending in a number remains part of the text", async () => {
   const stdout = createStream();
   const robot = createRobot({

@@ -9,25 +9,48 @@ const MODEL_REVISION = "9027d49d3764d465c3d7c4e8506910fb8d9c1498";
 const MODEL_BASE_URL = `https://media.githubusercontent.com/media/${MODEL_REPOSITORY}/${MODEL_REVISION}`;
 const DICTIONARY_BASE_URL = `https://raw.githubusercontent.com/${MODEL_REPOSITORY}/${MODEL_REVISION}`;
 const MODEL_ASSETS = {
-  detection: {
-    file: "PP-OCRv6_tiny_det.ort",
-    url: `${MODEL_BASE_URL}/detection/ort/PP-OCRv6_tiny_det.ort`,
-    size: 1882568,
-    sha256: "2816e82d26a09d6af722492f80f3059d458377c084eca88f34d84ddf9b385580"
+  tiny: {
+    detection: {
+      file: "PP-OCRv6_tiny_det.ort",
+      url: `${MODEL_BASE_URL}/detection/ort/PP-OCRv6_tiny_det.ort`,
+      size: 1882568,
+      sha256: "2816e82d26a09d6af722492f80f3059d458377c084eca88f34d84ddf9b385580"
+    },
+    recognition: {
+      file: "PP-OCRv6_tiny_rec.ort",
+      url: `${MODEL_BASE_URL}/recognition/ort/PP-OCRv6_tiny_rec.ort`,
+      size: 4530048,
+      sha256: "efc46adf1bde1e05b58748268abb0e71791bfa8616c435676bbca13d1ea47767"
+    },
+    charactersDictionary: {
+      file: "ppocrv6_tiny_dict.txt",
+      url: `${DICTIONARY_BASE_URL}/recognition/ppocrv6_tiny_dict.txt`,
+      size: 27157,
+      sha256: "2f3717bbd530b681b6db3be35cc485e8a41a932b9558b833986bf0894eb21f2d"
+    }
   },
-  recognition: {
-    file: "PP-OCRv6_tiny_rec.ort",
-    url: `${MODEL_BASE_URL}/recognition/ort/PP-OCRv6_tiny_rec.ort`,
-    size: 4530048,
-    sha256: "efc46adf1bde1e05b58748268abb0e71791bfa8616c435676bbca13d1ea47767"
-  },
-  charactersDictionary: {
-    file: "ppocrv6_tiny_dict.txt",
-    url: `${DICTIONARY_BASE_URL}/recognition/ppocrv6_tiny_dict.txt`,
-    size: 27157,
-    sha256: "2f3717bbd530b681b6db3be35cc485e8a41a932b9558b833986bf0894eb21f2d"
+  small: {
+    detection: {
+      file: "PP-OCRv6_small_det.ort",
+      url: `${MODEL_BASE_URL}/detection/ort/PP-OCRv6_small_det.ort`,
+      size: 9982352,
+      sha256: "c21be8d8268f0f45e2693b1d52432a290a56d008f6c1ff28b4baa7c35bab250e"
+    },
+    recognition: {
+      file: "PP-OCRv6_small_rec.ort",
+      url: `${MODEL_BASE_URL}/recognition/ort/PP-OCRv6_small_rec.ort`,
+      size: 21290816,
+      sha256: "40bccd9fa3ae2d14d724bf9d020c8f0edfc801489477b92f7449162a538366df"
+    },
+    charactersDictionary: {
+      file: "ppocrv6_dict.txt",
+      url: `${DICTIONARY_BASE_URL}/recognition/ppocrv6_dict.txt`,
+      size: 74948,
+      sha256: "41557512862dfe31970cf22407742b629725461dd84c0d8771bde9c87c2202c8"
+    }
   }
 };
+const DEFAULT_OCR_MODEL = "tiny";
 const DEFAULT_OCR_STRATEGY = "per-box";
 
 /**
@@ -181,10 +204,16 @@ function normalizeOcrItems(items) {
 
 export function createPaddleBackend(settings = {}, dependencies = {}) {
   const strategy = settings.strategy ?? DEFAULT_OCR_STRATEGY;
+  const modelName = settings.model ?? DEFAULT_OCR_MODEL;
   const recognition = { strategy };
+  const modelAssets = dependencies.modelAssets
+    ?? (dependencies.modelAssetsByName ?? MODEL_ASSETS)[modelName];
+  if (!modelAssets) {
+    throw createOcrError(`Unsupported Paddle OCR model: ${modelName}.`, "OCR_MODEL_UNSUPPORTED");
+  }
   const resolvedDependencies = {
     cacheDirectory: dependencies.cacheDirectory ?? MODEL_CACHE_DIRECTORY,
-    modelAssets: dependencies.modelAssets ?? MODEL_ASSETS,
+    modelAssets,
     fetchResource: dependencies.fetchResource ?? globalThis.fetch,
     loadPaddle: dependencies.loadPaddle ?? (() => import("ppu-paddle-ocr"))
   };
@@ -218,6 +247,7 @@ export function createPaddleBackend(settings = {}, dependencies = {}) {
 
   return {
     name: "paddle",
+    model: modelName,
     async recognize(image, options = {}) {
       if (!(image instanceof ArrayBuffer)) {
         throw createOcrError("Paddle OCR expects captured image data as an ArrayBuffer.", "OCR_INPUT_INVALID");

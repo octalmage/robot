@@ -21,12 +21,14 @@ import {
   windowOptionShape
 } from "./shared.js";
 
-const matchTypeSchema = z.enum(["exact", "startsWith", "contains"]);
-const TEXT_MATCH_RANK = { exact: 0, startsWith: 1, contains: 2 };
+const matchTypeSchema = z.enum(["exact", "startsWith", "contains", "fuzzy"]);
+const TEXT_MATCH_RANK = { exact: 0, startsWith: 1, contains: 2, fuzzy: 3 };
+const MIN_FUZZY_QUERY_LENGTH = 4;
 
 export const textBackendOptionsShape = {
   ocr: z.string().optional().describe("External OCR executable path or command"),
   recLangs: z.string().optional().describe("OCR recognition languages"),
+  ocrModel: z.enum(["tiny", "small"]).default("tiny").describe("Paddle OCR model size"),
   ocrStrategy: z.enum(["per-box", "per-line", "cross-line"])
     .default("per-box")
     .describe("Paddle OCR recognition strategy")
@@ -38,6 +40,7 @@ const textMatchOptions = z.object({
   confidence: z.number().default(0).describe("Minimum OCR confidence"),
   index: indexSchema,
   exact: z.boolean().optional().describe("Require an exact text match"),
+  fuzzy: z.boolean().optional().describe("Allow one OCR character error in queries of four or more characters"),
   ...textBackendOptionsShape,
   keepCapture: z.boolean().optional().describe("Keep the selected OCR capture")
 });
@@ -52,6 +55,8 @@ const matchEntrySchema = z.object({
   text: z.string().describe("Recognized text"),
   confidence: z.number().describe("OCR confidence"),
   matchType: matchTypeSchema.describe("Text match ranking type"),
+  editDistance: z.number().int().nullable().describe("Fuzzy edit distance"),
+  similarity: z.number().nullable().describe("Fuzzy similarity from zero to one"),
   bounds: rectSchema.describe("Matched substring bounds"),
   rawBounds: rectSchema.describe("Original OCR bounds"),
   screenPoint: pointSchema.describe("Screen point for the match")
@@ -60,9 +65,12 @@ const matchEntrySchema = z.object({
 const textMatchOutput = z.object({
   query: z.string().describe("Normalized command query"),
   found: z.boolean().describe("Whether a matching occurrence was found"),
+  ambiguous: z.boolean().describe("Whether equally ranked fuzzy matches prevented automatic selection"),
   text: z.string().nullable().describe("Selected recognized text"),
   confidence: z.number().nullable().describe("Selected OCR confidence"),
   matchType: matchTypeSchema.nullable().describe("Selected text match type"),
+  editDistance: z.number().int().nullable().describe("Selected fuzzy edit distance"),
+  similarity: z.number().nullable().describe("Selected fuzzy similarity from zero to one"),
   bounds: rectSchema.nullable().describe("Selected substring bounds"),
   rawBounds: rectSchema.nullable().describe("Selected original OCR bounds"),
   screenPoint: pointSchema.nullable().describe("Selected screen point"),
@@ -78,6 +86,112 @@ function normalizeText(value) {
     .toLowerCase()
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function normalizeFuzzyText(value) {
+  return normalizeText(value)
+    .replace(/([\p{L}\p{N}])[\p{P}\p{S}]+(?=[\p{L}\p{N}])/gu, "$1");
+}
+
+function getSingleEditDistance(left, right) {
+  if (left === right) {
+    return 0;
+  }
+
+  const leftCharacters = Array.from(left);
+  const rightCharacters = Array.from(right);
+  const lengthDifference = leftCharacters.length - rightCharacters.length;
+  if (Math.abs(lengthDifference) > 1) {
+    return null;
+  }
+
+  if (lengthDifference === 0) {
+    let differences = 0;
+    for (let index = 0; index < leftCharacters.length; index += 1) {
+      if (leftCharacters[index] !== rightCharacters[index]) {
+        differences += 1;
+        if (differences > 1) {
+          return null;
+        }
+      }
+    }
+    return 1;
+  }
+
+  const shorter = lengthDifference < 0 ? leftCharacters : rightCharacters;
+  const longer = lengthDifference < 0 ? rightCharacters : leftCharacters;
+  let shorterIndex = 0;
+  let longerIndex = 0;
+  let skipped = false;
+
+  while (shorterIndex < shorter.length && longerIndex < longer.length) {
+    if (shorter[shorterIndex] === longer[longerIndex]) {
+      shorterIndex += 1;
+      longerIndex += 1;
+      continue;
+    }
+    if (skipped) {
+      return null;
+    }
+    skipped = true;
+    longerIndex += 1;
+  }
+
+  return 1;
+}
+
+function compareFuzzyQuality(left, right) {
+  if (left.editDistance !== right.editDistance) {
+    return left.editDistance - right.editDistance;
+  }
+  return right.similarity - left.similarity;
+}
+
+function findFuzzyCandidates(query, observation) {
+  const normalizedQuery = normalizeFuzzyText(query);
+  const comparableQueryLength = Array.from(normalizedQuery.replace(/\s/g, "")).length;
+  if (comparableQueryLength < MIN_FUZZY_QUERY_LENGTH) {
+    return [];
+  }
+
+  const normalizedObservation = normalizeText(observation);
+  const tokens = Array.from(normalizedObservation.matchAll(/\S+/g), (match) => ({
+    start: match.index,
+    end: match.index + match[0].length
+  }));
+  const queryWordCount = normalizedQuery.split(" ").length;
+  const minimumWords = Math.max(1, queryWordCount - 1);
+  const maximumWords = Math.min(tokens.length, queryWordCount + 1);
+  const candidates = [];
+
+  for (let wordCount = minimumWords; wordCount <= maximumWords; wordCount += 1) {
+    for (let startToken = 0; startToken + wordCount <= tokens.length; startToken += 1) {
+      const startIndex = tokens[startToken].start;
+      const endIndex = tokens[startToken + wordCount - 1].end;
+      const candidateText = normalizeFuzzyText(normalizedObservation.slice(startIndex, endIndex));
+      const editDistance = getSingleEditDistance(normalizedQuery, candidateText);
+      if (editDistance === null) {
+        continue;
+      }
+
+      const candidateLength = Array.from(candidateText).length;
+      const queryLength = Array.from(normalizedQuery).length;
+      candidates.push({
+        startIndex,
+        matchedText: normalizedObservation.slice(startIndex, endIndex),
+        editDistance,
+        similarity: 1 - (editDistance / Math.max(queryLength, candidateLength))
+      });
+    }
+  }
+
+  candidates.sort((left, right) => compareFuzzyQuality(left, right) || left.startIndex - right.startIndex);
+  if (candidates.length === 0) {
+    return candidates;
+  }
+
+  const best = candidates[0];
+  return candidates.filter((candidate) => compareFuzzyQuality(candidate, best) === 0);
 }
 
 function projectSubstringBounds(bounds, observationText, queryText, startIndex) {
@@ -96,13 +210,33 @@ function projectSubstringBounds(bounds, observationText, queryText, startIndex) 
   };
 }
 
+function compareTextMatches(left, right) {
+  if (TEXT_MATCH_RANK[left.matchType] !== TEXT_MATCH_RANK[right.matchType]) {
+    return TEXT_MATCH_RANK[left.matchType] - TEXT_MATCH_RANK[right.matchType];
+  }
+  if (left.matchType === "fuzzy") {
+    const fuzzyOrder = compareFuzzyQuality(left, right);
+    if (fuzzyOrder !== 0) {
+      return fuzzyOrder;
+    }
+  }
+  if (left.textLength !== right.textLength) {
+    return left.textLength - right.textLength;
+  }
+  return right.confidence - left.confidence;
+}
+
 function rankTextMatches(query, ocrItems, options) {
   const observations = Array.isArray(ocrItems) ? ocrItems : [];
   const normalizedQuery = normalizeText(query);
-  const matches = [];
+  const strictMatches = [];
+  const fuzzyMatches = [];
 
   if (!normalizedQuery) {
     throw createCommandError("Text query cannot be empty.", "INVALID_ARGUMENT");
+  }
+  if (options.exact && options.fuzzy) {
+    throw createCommandError("--exact and --fuzzy cannot be combined.", "INVALID_ARGUMENT");
   }
 
   for (const observation of observations) {
@@ -120,39 +254,53 @@ function rankTextMatches(query, ocrItems, options) {
       startIndex = 0;
     } else if (!options.exact) {
       startIndex = normalizedObservation.indexOf(normalizedQuery);
-      if (startIndex === -1) {
-        continue;
+      if (startIndex !== -1) {
+        matchType = normalizedObservation.startsWith(normalizedQuery) ? "startsWith" : "contains";
       }
-      matchType = normalizedObservation.startsWith(normalizedQuery) ? "startsWith" : "contains";
-    } else {
-      continue;
     }
 
     const rawBounds = observation.bounds;
-    matches.push({
-      text: observation.text,
-      confidence,
-      rawBounds,
-      bounds: matchType === "exact"
-        ? rawBounds
-        : projectSubstringBounds(rawBounds, normalizedObservation, normalizedQuery, startIndex),
-      matchType,
-      textLength: normalizedObservation.length
-    });
+    if (matchType) {
+      strictMatches.push({
+        text: observation.text,
+        confidence,
+        rawBounds,
+        bounds: matchType === "exact"
+          ? rawBounds
+          : projectSubstringBounds(rawBounds, normalizedObservation, normalizedQuery, startIndex),
+        matchType,
+        editDistance: null,
+        similarity: null,
+        textLength: normalizedObservation.length
+      });
+      continue;
+    }
+
+    if (!options.fuzzy) {
+      continue;
+    }
+
+    for (const candidate of findFuzzyCandidates(normalizedQuery, normalizedObservation)) {
+      fuzzyMatches.push({
+        text: observation.text,
+        confidence,
+        rawBounds,
+        bounds: projectSubstringBounds(
+          rawBounds,
+          normalizedObservation,
+          candidate.matchedText,
+          candidate.startIndex
+        ),
+        matchType: "fuzzy",
+        editDistance: candidate.editDistance,
+        similarity: candidate.similarity,
+        textLength: normalizedObservation.length
+      });
+    }
   }
 
-  matches.sort((left, right) => {
-    if (TEXT_MATCH_RANK[left.matchType] !== TEXT_MATCH_RANK[right.matchType]) {
-      return TEXT_MATCH_RANK[left.matchType] - TEXT_MATCH_RANK[right.matchType];
-    }
-
-    if (left.textLength !== right.textLength) {
-      return left.textLength - right.textLength;
-    }
-
-    return right.confidence - left.confidence;
-  });
-
+  const matches = strictMatches.length > 0 ? strictMatches : fuzzyMatches;
+  matches.sort(compareTextMatches);
   return matches;
 }
 
@@ -268,64 +416,84 @@ async function collectTextMatch(robot, query, rect, options, runtime) {
   }
 
   const searchRects = getTextSearchRects(robot, rect, options.clipToDisplays);
-  const instances = [];
-  let retainedResult = null;
-  let selected = null;
-  let selectedInstance = null;
+  const captureResults = [];
+  let retainedResult;
 
   try {
     for (let displayIndex = 0; displayIndex < searchRects.length; displayIndex += 1) {
       const capture = captureWithRect(robot, searchRects[displayIndex]);
       const result = await scanTextCapture(capture, query, options, runtime);
-      const firstInstanceIndex = instances.length;
+      captureResults.push({ ...result, displayIndex: displayIndex + 1 });
+    }
 
-      for (const match of result.matches) {
-        instances.push({
-          index: instances.length + 1,
-          displayIndex: displayIndex + 1,
-          text: match.text,
-          confidence: match.confidence,
-          matchType: match.matchType,
-          bounds: match.bounds,
-          rawBounds: match.rawBounds,
-          screenPoint: getScreenPointForBounds(result.capture, match.bounds)
-        });
-      }
+    let candidates = captureResults.flatMap((result) => result.matches.map((match) => ({
+      ...match,
+      displayIndex: result.displayIndex,
+      screenPoint: getScreenPointForBounds(result.capture, match.bounds),
+      captureResult: result
+    })));
+    if (candidates.some((candidate) => candidate.matchType !== "fuzzy")) {
+      candidates = candidates.filter((candidate) => candidate.matchType !== "fuzzy");
+    }
+    candidates.sort(compareTextMatches);
 
-      const localIndex = requestedIndex - firstInstanceIndex - 1;
-      if (!selected && localIndex >= 0 && localIndex < result.matches.length) {
-        selected = result.matches[localIndex];
-        selectedInstance = instances[firstInstanceIndex + localIndex];
-        disposeTextCapture(retainedResult);
-        retainedResult = result;
-      } else if (selected) {
+    const ambiguous = !options.selectionExplicit
+      && requestedIndex === 1
+      && candidates.length > 1
+      && candidates[0].matchType === "fuzzy"
+      && compareFuzzyQuality(candidates[0], candidates[1]) === 0;
+    const selectedCandidate = ambiguous ? null : candidates[requestedIndex - 1] || null;
+    retainedResult = selectedCandidate?.captureResult
+      || candidates[0]?.captureResult
+      || captureResults[captureResults.length - 1];
+
+    for (const result of captureResults) {
+      if (result !== retainedResult) {
         disposeTextCapture(result);
-      } else {
-        disposeTextCapture(retainedResult);
-        retainedResult = result;
       }
     }
+
+    const instances = candidates.map((candidate, index) => ({
+      index: index + 1,
+      displayIndex: candidate.displayIndex,
+      text: candidate.text,
+      confidence: candidate.confidence,
+      matchType: candidate.matchType,
+      editDistance: candidate.editDistance,
+      similarity: candidate.similarity,
+      bounds: candidate.bounds,
+      rawBounds: candidate.rawBounds,
+      screenPoint: candidate.screenPoint
+    }));
+    const selected = selectedCandidate
+      ? instances[requestedIndex - 1]
+      : null;
+
+    return {
+      capture: retainedResult.capture,
+      captureImagePath: retainedResult.captureImagePath,
+      captureTempDir: retainedResult.captureTempDir,
+      instances,
+      requestedIndex,
+      selected,
+      ambiguous,
+      screenPoint: selected ? selected.screenPoint : null,
+      candidateCount: instances.length
+    };
   } catch (error) {
-    disposeTextCapture(retainedResult);
+    for (const result of captureResults) {
+      disposeTextCapture(result);
+    }
     throw error;
   }
-
-  return {
-    capture: retainedResult.capture,
-    captureImagePath: retainedResult.captureImagePath,
-    captureTempDir: retainedResult.captureTempDir,
-    instances,
-    requestedIndex,
-    selected,
-    screenPoint: selectedInstance ? selectedInstance.screenPoint : null,
-    candidateCount: instances.length
-  };
 }
 export async function observeText(runtime, query, rect, options = {}) {
   const searchOptions = {
     ...options,
     confidence: options.confidence ?? 0,
     index: options.index ?? 1,
+    selectionExplicit: options.index !== undefined,
+    ocrModel: options.ocrModel ?? "tiny",
     ocrStrategy: options.ocrStrategy ?? "per-box",
     clipToDisplays: options.clipToDisplays ?? true,
     keepCapture: false
@@ -366,9 +534,12 @@ function buildTextResult(query, result, options) {
   const output = {
     query,
     found: !!result.selected,
+    ambiguous: result.ambiguous,
     text: result.selected ? result.selected.text : null,
     confidence: result.selected ? result.selected.confidence : null,
     matchType: result.selected ? result.selected.matchType : null,
+    editDistance: result.selected ? result.selected.editDistance : null,
+    similarity: result.selected ? result.selected.similarity : null,
     bounds: result.selected ? result.selected.bounds : null,
     rawBounds: result.selected ? result.selected.rawBounds : null,
     screenPoint: result.screenPoint,
@@ -414,7 +585,12 @@ function createTextMatchCommand({ description, click = false, wait = false }) {
       const runtime = c.var.runtime;
       const robot = runtime.getRobot();
       const resolved = resolveTextQuery(c.args.query, c.options.index, click);
-      const searchOptions = { ...c.options, index: resolved.index, clipToDisplays: !!c.options.window };
+      const searchOptions = {
+        ...c.options,
+        index: resolved.index,
+        selectionExplicit: resolved.index !== undefined,
+        clipToDisplays: !!c.options.window
+      };
       const { rect } = await resolveWindowScope(runtime, {}, searchOptions, { activate: true });
       let textResult;
       let waitResult;

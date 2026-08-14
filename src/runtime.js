@@ -39,8 +39,8 @@ export function createRuntime(overrides = {}, environment = {}) {
     : () => fs.readFileSync(0, "utf8");
   let robotLoaded = false;
   let robot;
-  let activeOcrBackend;
-  let ownsOcrBackend = false;
+  const ocrBackends = new Map();
+  const ownedOcrBackends = new Set();
   let applicationController;
   let windowController;
   let ownsWindowController = false;
@@ -55,25 +55,34 @@ export function createRuntime(overrides = {}, environment = {}) {
   }
 
   function getOcrBackend(options = {}) {
-    if (activeOcrBackend) {
-      return activeOcrBackend;
+    if (overrides.ocrBackend) {
+      if (typeof overrides.ocrBackend.recognize !== "function") {
+        throw createCommandError("OCR backend must provide a recognize method.", "OCR_BACKEND_INVALID");
+      }
+      return overrides.ocrBackend;
     }
 
     const externalPath = options.ocr || environment.ROBOT_OCR_PATH || overrides.ocrPath;
     const binary = externalPath ? resolveExecutablePath(cwd, externalPath) : null;
-    activeOcrBackend = overrides.ocrBackend || (binary
-      ? createExternalBackend(binary, processRunner)
-      : createPaddleBackend({
-        strategy: options.ocrStrategy,
-        minimumConfidence: options.confidence
-      }));
+    const model = options.ocrModel || "tiny";
+    const key = binary ? `external:${binary}` : `paddle:${model}`;
+    let backend = ocrBackends.get(key);
 
-    if (!activeOcrBackend || typeof activeOcrBackend.recognize !== "function") {
-      throw createCommandError("OCR backend must provide a recognize method.", "OCR_BACKEND_INVALID");
+    if (!backend) {
+      backend = binary
+        ? createExternalBackend(binary, processRunner)
+        : createPaddleBackend({
+          model,
+          strategy: options.ocrStrategy
+        });
+      if (!backend || typeof backend.recognize !== "function") {
+        throw createCommandError("OCR backend must provide a recognize method.", "OCR_BACKEND_INVALID");
+      }
+      ocrBackends.set(key, backend);
+      ownedOcrBackends.add(backend);
     }
 
-    ownsOcrBackend = !overrides.ocrBackend;
-    return activeOcrBackend;
+    return backend;
   }
 
   function getWindowController() {
@@ -107,21 +116,19 @@ export function createRuntime(overrides = {}, environment = {}) {
   }
 
   async function dispose() {
-    const backend = activeOcrBackend;
-    const shouldDestroyBackend = ownsOcrBackend && backend && typeof backend.destroy === "function";
+    const backends = Array.from(ownedOcrBackends)
+      .filter((backend) => typeof backend.destroy === "function");
     const controller = windowController;
     const shouldDisposeController = ownsWindowController && controller && typeof controller.dispose === "function";
 
-    activeOcrBackend = undefined;
-    ownsOcrBackend = false;
+    ocrBackends.clear();
+    ownedOcrBackends.clear();
     applicationController = undefined;
     windowController = undefined;
     ownsWindowController = false;
 
     try {
-      if (shouldDestroyBackend) {
-        await backend.destroy();
-      }
+      await Promise.all(backends.map((backend) => backend.destroy()));
     } finally {
       if (shouldDisposeController) {
         await controller.dispose();

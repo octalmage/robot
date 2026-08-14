@@ -66,7 +66,8 @@ export const rectangleArgsShape = {
 
 export const timeoutSchema = z.number().min(0).default(30000).describe("Wait timeout in milliseconds");
 export const indexSchema = z.number().int().min(1).optional().describe("One-based match occurrence");
-export const cpmSchema = z.number().default(12000).describe("Typing speed in characters per minute");
+export const DEFAULT_CPM = 600;
+export const cpmSchema = z.number().positive().default(DEFAULT_CPM).describe("Typing speed in characters per minute");
 
 export function createCommandError(message, code = "CLI_ERROR", exitCode = 1) {
   const error = new Error(message);

@@ -75,6 +75,7 @@ test("Paddle OCR lazily downloads, verifies, and reuses cached model assets", as
   assert.equal(fs.existsSync(cacheDirectory), false);
 
   const firstBackend = createBackend();
+  assert.equal(firstBackend.model, "tiny");
   assert.equal(fetchCalls.length, 0);
   const firstItems = await firstBackend.recognize(input);
 
@@ -125,6 +126,75 @@ test("Paddle OCR lazily downloads, verifies, and reuses cached model assets", as
     fs.readFileSync(path.join(cacheDirectory, modelAssets.detection.file)),
     sourceAssets.detection
   );
+});
+
+test("Paddle OCR selects and caches the requested named model", async (t) => {
+  const tempDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "robot-small-model-"));
+  const cacheDirectory = path.join(tempDirectory, "cache");
+  const sourceAssets = {
+    detection: Buffer.from([11, 12]),
+    recognition: Buffer.from([21, 22, 23]),
+    charactersDictionary: Buffer.from("small\nmodel\n")
+  };
+  const smallAssets = Object.fromEntries(Object.entries(sourceAssets).map(([key, buffer]) => [
+    key,
+    {
+      file: `small-${key}.model`,
+      url: `https://models.example/small-${key}.model`,
+      size: buffer.byteLength,
+      sha256: sha256(buffer)
+    }
+  ]));
+  const sourceByUrl = new Map(Object.entries(smallAssets).map(([key, entry]) => [
+    entry.url,
+    sourceAssets[key]
+  ]));
+  const fetchCalls = [];
+  let serviceOptions;
+  let destroyCalls = 0;
+
+  class FakePaddleOcrService {
+    constructor(options) {
+      serviceOptions = options;
+    }
+
+    async initialize() {}
+
+    async recognize() {
+      return { results: [] };
+    }
+
+    async destroy() {
+      destroyCalls += 1;
+    }
+  }
+
+  const backend = createPaddleBackend(
+    { model: "small" },
+    {
+      cacheDirectory,
+      modelAssetsByName: { small: smallAssets },
+      async fetchResource(url) {
+        fetchCalls.push(url);
+        return new Response(sourceByUrl.get(url));
+      },
+      async loadPaddle() {
+        return { PaddleOcrService: FakePaddleOcrService };
+      }
+    }
+  );
+
+  t.after(() => fs.rmSync(tempDirectory, { recursive: true, force: true }));
+  assert.equal(backend.model, "small");
+  await backend.recognize(new ArrayBuffer(1));
+  await backend.destroy();
+
+  assert.deepEqual(fetchCalls.sort(), Object.values(smallAssets).map((entry) => entry.url).sort());
+  assert.deepEqual(serviceOptions.model, Object.fromEntries(Object.entries(smallAssets).map(([key, entry]) => [
+    key,
+    path.join(cacheDirectory, entry.file)
+  ])));
+  assert.equal(destroyCalls, 1);
 });
 
 test("toArrayBuffer preserves only the selected Buffer view", () => {

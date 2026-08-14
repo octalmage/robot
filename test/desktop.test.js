@@ -175,9 +175,9 @@ test("types with a reliable default speed", async () => {
   const result = JSON.parse(stdout.read());
 
   assert.equal(exitCode, 0);
-  assert.deepEqual(calls, [{ text: "hello", cpm: 12000 }]);
+  assert.deepEqual(calls, [{ text: "hello", cpm: 600 }]);
   assert.equal(result.text, "hello");
-  assert.equal(result.cpm, 12000);
+  assert.equal(result.cpm, 600);
 });
 test("type and keyTap activate a selected window before sending input", async () => {
   const events = [];
@@ -211,7 +211,7 @@ test("type and keyTap activate a selected window before sending input", async ()
   assert.deepEqual(events, [
     ["resolve", TEST_WINDOW.id],
     ["activate", TEST_WINDOW.id],
-    ["type", "stick", 12000],
+    ["type", "stick", 600],
     ["resolve", TEST_WINDOW.id],
     ["activate", TEST_WINDOW.id],
     ["keyTap", "enter"]
@@ -897,7 +897,7 @@ test("sequence accepts inline JSON and stdin without step files", async () => {
     ["keyTap", "backspace"],
     ["resolve", TEST_WINDOW.id],
     ["activate", TEST_WINDOW.id],
-    ["type", "32", 12000]
+    ["type", "32", 600]
   ]);
 });
 
@@ -1027,6 +1027,10 @@ test("sequence clickText finds and clicks text inside the selected window", asyn
     found: true,
     matchedText: "New Note",
     confidence: 0.99,
+    matchType: "exact",
+    editDistance: null,
+    similarity: null,
+    ambiguous: false,
     candidateCount: 1,
     x: 150,
     y: 230,

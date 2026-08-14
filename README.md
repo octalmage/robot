@@ -42,6 +42,7 @@ robot findImage ./button.png --tolerance 0.1
 robot clickImage ./button.png
 robot clickText "Message General"
 robot waitForText "cycle complete" --window Minecraft
+robot waitForText Seed --window Minecraft --fuzzy
 
 robot sequence --window Minecraft --steps steps.json
 ```
@@ -50,7 +51,8 @@ Run `robot --help` or `<command> --help` for the complete command API. Commands
 print TOON by default; use `--json` or
 `--format <toon|json|yaml|md|jsonl>` for another format.
 
-`type` defaults to 12,000 characters per minute. Override it with `--cpm`.
+`type` defaults to 600 characters per minute (100 ms per character). Override
+it with `--cpm`.
 
 ## Window targeting and sequences
 
@@ -76,7 +78,7 @@ in the same process:
 ```json
 [
   { "command": "keyTap", "key": "t" },
-  { "command": "type", "text": "cycle complete", "cpm": 12000 },
+  { "command": "type", "text": "cycle complete", "cpm": 600 },
   { "command": "assertText", "query": "cycle complete", "exact": true },
   { "command": "click", "x": 100, "y": 50, "button": "left" },
   { "command": "clickText", "query": "New Note", "exact": true },
@@ -90,13 +92,14 @@ formats:
 | `command` | Required fields | Optional fields and defaults |
 | --- | --- | --- |
 | `keyTap` | `key` | `modifiers` |
-| `type` | `text` | `cpm` (`12000`) |
+| `type` | `text` | `cpm` (`600`) |
 | `click` | none | `x` and `y` together (window-relative), `button` (`left`), `double` (`false`) |
-| `clickText` | `query` | `index` (`1`), `confidence` (`0`), `exact`, `button` (`left`), `double` (`false`), OCR options |
-| `assertText` | `query` | `confidence` (`0`), `exact`, OCR options |
-| `waitForText` | `query` | `timeout` (`30000`), `confidence` (`0`), `exact`, OCR options |
+| `clickText` | `query` | `index` (`1`), `confidence` (`0`), `exact`, `fuzzy`, `button` (`left`), `double` (`false`), OCR options |
+| `assertText` | `query` | `confidence` (`0`), `exact`, `fuzzy`, OCR options |
+| `waitForText` | `query` | `timeout` (`30000`), `confidence` (`0`), `exact`, `fuzzy`, OCR options |
 
-OCR options are `ocr`, `recLangs`, and `ocrStrategy` (`per-box`). A `click`
+OCR options are `ocr`, `recLangs`, `ocrModel` (`tiny`), and `ocrStrategy`
+(`per-box`). A `click`
 without coordinates clicks the current pointer. `clickText`, `assertText`, and
 `waitForText` stop the sequence when their target is not found. Print the
 complete generated JSON Schema with:
@@ -138,14 +141,22 @@ Retina selection screenshots. The result's `imageScale` and `tolerance` fields
 show which match succeeded.
 
 Text results include every candidate in `matches`, with one-based indices,
-confidence, bounds, and screen coordinates. `clickText` and `clickWord` accept
-an occurrence as either a trailing integer or `--index`. `--index` is also
-available on the find and wait commands. Quote a query ending in a number to
-keep it as one argument:
+confidence, bounds, screen coordinates, and match quality. `clickText` and
+`clickWord` accept an occurrence as either a trailing integer or `--index`.
+`--index` is also available on the find and wait commands. Quote a query ending
+in a number to keep it as one argument:
 
 ```sh
 robot clickText "Version 2"
 ```
+
+Use `--fuzzy` to tolerate one insertion, deletion, or substitution in queries
+of at least four characters. It also ignores punctuation inserted inside a
+word, such as `Wor-ld`. Exact, prefix, and substring matches always win.
+Equally ranked fuzzy candidates are reported as `ambiguous` and are not
+selected unless you pass an explicit occurrence. `--exact` and `--fuzzy`
+cannot be combined. Fuzzy results report `matchType`, `editDistance`, and
+`similarity`.
 
 Use `--x`, `--y`, `--width`, and `--height` together to limit image or text
 matching to a screen region:
@@ -164,9 +175,10 @@ leaves that OCR input on disk for inspection.
 
 ## OCR models and external backends
 
-Text commands use `ppu-paddle-ocr` with ONNX Runtime Node. On the first text
-command, `robot` downloads the PP-OCRv6 Tiny detection, recognition, and
-dictionary files (about 6 MB) to `~/.cache/ppu-paddle-ocr`. Cached files are
+Text commands use `ppu-paddle-ocr` with ONNX Runtime Node. The default
+`--ocr-model tiny` downloads about 6 MB on first use. Select
+`--ocr-model small` for the higher-capacity roughly 30 MB model. Detection,
+recognition, and dictionary files are stored in `~/.cache/ppu-paddle-ocr` and
 verified by size and SHA-256 digest before use.
 
 Select an external OCR executable with `--ocr <command>` or
