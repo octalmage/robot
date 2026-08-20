@@ -920,6 +920,93 @@ test("text retains its OCR capture when requested", async (t) => {
   assert.ok(fs.existsSync(capturePath));
 });
 
+test("text applies rectangle coordinates relative to its selected window", async () => {
+  const stdout = createStream();
+  const events = [];
+  const window = {
+    id: "4242",
+    title: "Minecraft 1.21",
+    process: "javaw",
+    processId: 222,
+    bounds: { x: 100, y: 200, width: 800, height: 600 },
+    display: "1",
+    scale: 1
+  };
+  const robot = createRobot({
+    screen: {
+      capture(...args) {
+        events.push(["capture", ...args]);
+        return createTextCapture({
+          width: 300,
+          height: 100,
+          screenX: 110,
+          screenY: 220
+        });
+      }
+    }
+  });
+
+  const exitCode = await run([
+    "text",
+    "--window",
+    "Minecraft",
+    "--x",
+    "10",
+    "--y",
+    "20",
+    "--width",
+    "300",
+    "--height",
+    "100",
+    "--json"
+  ], {
+    stdout,
+    robot,
+    windowController: {
+      async resolve(reference) {
+        events.push(["resolve", reference]);
+        return window;
+      },
+      async activate(selected) {
+        events.push(["activate", selected.id]);
+        return selected;
+      }
+    },
+    ocrBackend: {
+      async recognize() {
+        return [{
+          text: "Cycle complete",
+          confidence: 1,
+          bounds: { x: 10, y: 10, width: 40, height: 20 }
+        }];
+      }
+    }
+  });
+  const result = JSON.parse(stdout.read());
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(events, [
+    ["resolve", "Minecraft"],
+    ["activate", "4242"],
+    ["capture", 110, 220, 300, 100]
+  ]);
+  assert.deepEqual(result.allItems[0].screenPoint, { x: 140, y: 240 });
+  assert.deepEqual(result.displays[0], {
+    displayId: 1,
+    screenX: 110,
+    screenY: 220,
+    width: 300,
+    height: 100,
+    text: ["Cycle complete"],
+    items: [{
+      text: "Cycle complete",
+      confidence: 1,
+      bounds: { x: 10, y: 10, width: 40, height: 20 },
+      screenPoint: { x: 140, y: 240 }
+    }]
+  });
+});
+
 test("findText clips a selected window capture to its visible display area", async () => {
   const stdout = createStream();
   const captureCalls = [];

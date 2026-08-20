@@ -43,6 +43,7 @@ robot clickImage ./button.png
 robot clickText "Message General"
 robot waitForText "cycle complete" --window Minecraft
 robot waitForText Seed --window Minecraft --fuzzy
+robot text --window Minecraft --x 505 --y 280 --width 950 --height 540
 
 robot sequence --window Minecraft --steps steps.json
 ```
@@ -108,10 +109,11 @@ Use `--window <reference>` on `screenshot`, `click`, `type`, `keyTap`, image,
 and text commands. References can be a window ID, title, process, or application
 class. Exact process/application matches take precedence over title substrings.
 Ambiguous references fail and list the matching window IDs. Bounds are refreshed
-after activation, and text scopes are clipped to visible display areas.
-Window-scoped polling reactivates the target immediately before every capture;
-these captures represent the visible window rectangle, not an occlusion-free
-offscreen framebuffer.
+after activation, and text scopes are clipped to visible display areas. Rectangle
+options are window-relative when combined with `--window`, including on the
+`text` inventory command. Window-scoped polling reactivates the target
+immediately before every capture; these captures represent the visible window
+rectangle, not an occlusion-free offscreen framebuffer.
 
 `sequence` reasserts target focus before every input or OCR step and each
 polling retry:
@@ -203,10 +205,11 @@ substring matches always win. Equally ranked fuzzy candidates are reported as
 results report `matchType`, `editDistance`, and `similarity`.
 
 Use `--x`, `--y`, `--width`, and `--height` together to limit image or text
-matching to a screen region:
+capture and matching to a screen region:
 
 ```sh
 robot clickText Today --x 650 --y 200 --width 200 --height 100
+robot text --window Minecraft --x 505 --y 280 --width 950 --height 540
 ```
 
 Paddle OCR defaults to `--ocr-strategy per-box`, which works well for compact

@@ -650,7 +650,12 @@ export function registerTextCommands(cli) {
 
   cli.command("text", {
     description: "Inventory visible text, bounds, and screen points to identify the current UI before acting.",
-    options: z.object({ ...textBackendOptionsShape, ...windowOptionShape, keepCapture: z.boolean().optional().describe("Keep each OCR capture") }),
+    options: z.object({
+      ...rectangleOptionsShape,
+      ...textBackendOptionsShape,
+      ...windowOptionShape,
+      keepCapture: z.boolean().optional().describe("Keep each OCR capture")
+    }),
     output: z.object({
       ocrModel: z.enum(["tiny", "small"]).describe("Applied Paddle OCR model size"),
       ocrStrategy: z.enum(["per-box", "per-line", "cross-line"]).describe("Applied OCR recognition strategy"),
