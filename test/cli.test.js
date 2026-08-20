@@ -54,7 +54,7 @@ test("clickText help exposes its generated query and options", async () => {
 
   assert.equal(exitCode, 0);
   assert.match(help, /query/);
-  for (const option of ["--x", "--y", "--width", "--height", "--window", "--confidence", "--index", "--exact", "--fuzzy", "--ocr", "--rec-langs", "--ocr-model", "--ocr-strategy", "--keep-capture", "--button", "--double"]) {
+  for (const option of ["--x", "--y", "--width", "--height", "--window", "--confidence", "--index", "--exact", "--fuzzy", "--ocr-backend", "--ocr", "--rec-langs", "--ocr-model", "--ocr-strategy", "--keep-capture", "--button", "--double"]) {
     assert.match(help, new RegExp(option));
   }
   assert.match(help, /A trailing integer selects the 1-based occurrence/);
@@ -67,10 +67,10 @@ test("clickText schema exposes argument option and output contracts", async () =
 
   assert.equal(exitCode, 0);
   assert.equal(schema.args.properties.query.type, "array");
-  for (const option of ["index", "window", "keepCapture", "recLangs", "ocrModel", "ocrStrategy", "fuzzy", "button"]) {
+  for (const option of ["index", "window", "keepCapture", "recLangs", "ocrBackend", "ocrModel", "ocrStrategy", "fuzzy", "button"]) {
     assert.ok(schema.options.properties[option]);
   }
-  for (const field of ["query", "matches", "capture", "matchType", "editDistance", "similarity", "ambiguous", "ocrModel", "ocrStrategy", "fuzzy", "button", "double"]) {
+  for (const field of ["query", "matches", "capture", "matchType", "editDistance", "similarity", "ambiguous", "ocrBackend", "ocrModel", "ocrStrategy", "fuzzy", "button", "double"]) {
     assert.ok(schema.output.properties[field]);
   }
 });
@@ -173,10 +173,10 @@ test("sequence schema documents clickText step fields", async () => {
 
   assert.equal(exitCode, 0);
   assert.ok(clickText.required.includes("query"));
-  for (const field of ["index", "confidence", "exact", "fuzzy", "ocrModel", "ocrStrategy", "button", "double"]) {
+  for (const field of ["index", "confidence", "exact", "fuzzy", "ocrBackend", "ocrModel", "ocrStrategy", "button", "double"]) {
     assert.ok(clickText.properties[field]);
   }
-  for (const field of ["cpm", "fuzzy", "ocrModel", "ocrStrategy"]) {
+  for (const field of ["cpm", "fuzzy", "ocrBackend", "ocrModel", "ocrStrategy"]) {
     assert.ok(schema.options.properties[field]);
   }
   assert.ok(schema.output.properties.results.items.properties.command.enum.includes("clickText"));

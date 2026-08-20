@@ -1029,6 +1029,7 @@ test("sequence clickText finds and clicks text inside the selected window", asyn
     found: true,
     matchedText: "New Note",
     confidence: 0.99,
+    ocrBackend: "custom",
     ocrModel: "tiny",
     ocrStrategy: "per-box",
     fuzzy: false,

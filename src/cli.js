@@ -8,7 +8,7 @@ import { registerSequenceCommand } from "./commands/sequence.js";
 import { createRuntime } from "./runtime.js";
 
 const DESCRIPTION = "Single-shot desktop automation with mouse, keyboard, image matching, and OCR.";
-const SYNC_BODY = "On macOS, run `robot permissions --request` before desktop automation; user approval is still required. In unfamiliar interfaces, inventory visible controls with `robot text --window <target>` and prefer text/image targeting over guessed coordinates. Window-scoped polling and sequences reassert target focus before capture or input. `robot config --init` enables the recommended Small OCR plus strict-first fuzzy fallback; `--exact` disables that fallback per command. ROBOT_OCR_PATH selects an external OCR backend.";
+const SYNC_BODY = "On macOS, run `robot permissions --request` before desktop automation; user approval is still required. In unfamiliar interfaces, inventory visible controls with `robot text --window <target>` and prefer text/image targeting over guessed coordinates. Window-scoped polling and sequences reassert target focus before capture or input. `robot config --init` enables the recommended Small OCR plus strict-first fuzzy fallback; `--exact` disables that fallback per command. `--ocr-backend rapidocr` selects the optional local RapidOCR worker; ROBOT_OCR_PATH selects an external OCR backend.";
 
 export function createCli(overrides = {}) {
   const configSupport = createRobotConfigSupport({ path: overrides.configPath });
@@ -22,7 +22,9 @@ export function createCli(overrides = {}) {
       loader: configSupport.loader
     },
     env: z.object({
-      ROBOT_OCR_PATH: z.string().optional().describe("External OCR executable path or command")
+      ROBOT_OCR_PATH: z.string().optional().describe("External OCR executable path or command"),
+      ROBOT_OCR_BACKEND: z.enum(["paddle", "rapidocr"]).optional().describe("Built-in OCR backend"),
+      ROBOT_RAPIDOCR_COMMAND: z.string().optional().describe("uv executable path for the RapidOCR backend")
     }),
     vars: z.object({
       runtime: z.custom().optional()

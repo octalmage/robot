@@ -1,13 +1,17 @@
 import crypto from "node:crypto";
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
+import { createInterface } from "node:readline";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const MODEL_CACHE_DIRECTORY = path.join(os.homedir(), ".cache", "ppu-paddle-ocr");
 const MODEL_REPOSITORY = "PT-Perkasa-Pilar-Utama/ppu-paddle-ocr-models";
 const MODEL_REVISION = "9027d49d3764d465c3d7c4e8506910fb8d9c1498";
 const MODEL_BASE_URL = `https://media.githubusercontent.com/media/${MODEL_REPOSITORY}/${MODEL_REVISION}`;
 const DICTIONARY_BASE_URL = `https://raw.githubusercontent.com/${MODEL_REPOSITORY}/${MODEL_REVISION}`;
+const RAPIDOCR_WORKER_PATH = fileURLToPath(new URL("./rapidocr-worker.py", import.meta.url));
 const MODEL_ASSETS = {
   tiny: {
     detection: {
@@ -248,6 +252,7 @@ export function createPaddleBackend(settings = {}, dependencies = {}) {
   return {
     name: "paddle",
     model: modelName,
+    strategy,
     async recognize(image, options = {}) {
       if (!(image instanceof ArrayBuffer)) {
         throw createOcrError("Paddle OCR expects captured image data as an ArrayBuffer.", "OCR_INPUT_INVALID");
@@ -277,6 +282,235 @@ export function createPaddleBackend(settings = {}, dependencies = {}) {
       if (service) {
         await service.destroy();
       }
+    }
+  };
+}
+
+export function createRapidOcrBackend(settings = {}, dependencies = {}) {
+  const command = settings.command || "uv";
+  const workerPath = settings.workerPath || RAPIDOCR_WORKER_PATH;
+  const spawnProcess = dependencies.spawnProcess || spawn;
+  const pending = new Map();
+  let child = null;
+  let lineReader = null;
+  let startPromise = null;
+  let resolveReady;
+  let rejectReady;
+  let readySettled = false;
+  let exitPromise = null;
+  let resolveExit;
+  let nextRequestId = 1;
+  let stderr = "";
+  let stopping = false;
+  let destroyed = false;
+
+  function appendStderr(chunk) {
+    stderr = `${stderr}${chunk}`.slice(-8192);
+  }
+
+  function rejectPending(error) {
+    for (const request of pending.values()) {
+      request.reject(error);
+    }
+    pending.clear();
+  }
+
+  function fail(error) {
+    if (!readySettled) {
+      readySettled = true;
+      rejectReady(error);
+    }
+    rejectPending(error);
+  }
+
+  function protocolError(message) {
+    return createOcrError(`RapidOCR worker protocol error: ${message}`, "OCR_RAPIDOCR_PROTOCOL");
+  }
+
+  function handleLine(serialized) {
+    let message;
+    try {
+      message = JSON.parse(serialized);
+    } catch {
+      const error = protocolError("received invalid JSON.");
+      fail(error);
+      child?.kill();
+      return;
+    }
+
+    if (message?.type === "ready") {
+      if (!readySettled) {
+        readySettled = true;
+        resolveReady();
+      }
+      return;
+    }
+
+    const request = pending.get(message?.id);
+    if (!request) {
+      const error = protocolError(`received an unknown request ID: ${JSON.stringify(message?.id)}.`);
+      fail(error);
+      child?.kill();
+      return;
+    }
+    pending.delete(message.id);
+
+    if (message.error) {
+      request.reject(createOcrError(
+        `RapidOCR failed: ${message.error.message || "unknown worker error"}`,
+        message.error.code || "OCR_RAPIDOCR_FAILED"
+      ));
+      return;
+    }
+
+    try {
+      request.resolve(normalizeOcrItems(message.items));
+    } catch (error) {
+      request.reject(error);
+    }
+  }
+
+  function handleClose(code, signal) {
+    child = null;
+    lineReader?.close();
+    lineReader = null;
+    resolveExit?.();
+
+    if (stopping) {
+      return;
+    }
+
+    const details = stderr.trim();
+    const reason = signal
+      ? `signal ${signal}`
+      : `code ${code ?? "unknown"}`;
+    fail(createOcrError(
+      `RapidOCR worker exited with ${reason}${details ? `: ${details}` : "."}`,
+      "OCR_RAPIDOCR_EXITED"
+    ));
+  }
+
+  function start() {
+    if (startPromise) {
+      return startPromise;
+    }
+
+    startPromise = new Promise((resolve, reject) => {
+      resolveReady = resolve;
+      rejectReady = reject;
+    });
+
+    try {
+      child = spawnProcess(
+        command,
+        ["run", "--quiet", "--script", workerPath],
+        { stdio: ["pipe", "pipe", "pipe"], windowsHide: true }
+      );
+      exitPromise = new Promise((resolve) => {
+        resolveExit = resolve;
+      });
+      lineReader = createInterface({ input: child.stdout, crlfDelay: Infinity });
+      lineReader.on("line", handleLine);
+      child.stderr.setEncoding("utf8");
+      child.stderr.on("data", appendStderr);
+      child.once("error", (error) => {
+        const unavailable = error?.code === "ENOENT";
+        fail(createOcrError(
+          unavailable
+            ? `RapidOCR requires uv on PATH. Install uv from https://docs.astral.sh/uv/getting-started/installation/.`
+            : `Could not start RapidOCR worker: ${error.message}`,
+          unavailable ? "OCR_RAPIDOCR_UNAVAILABLE" : "OCR_RAPIDOCR_START_FAILED"
+        ));
+      });
+      child.once("close", handleClose);
+    } catch (error) {
+      fail(createOcrError(
+        `Could not start RapidOCR worker: ${error.message}`,
+        "OCR_RAPIDOCR_START_FAILED"
+      ));
+    }
+
+    return startPromise;
+  }
+
+  return {
+    name: "rapidocr",
+    model: "small",
+    strategy: "per-line",
+    async recognize(image, options = {}) {
+      if (!(image instanceof ArrayBuffer)) {
+        throw createOcrError("RapidOCR expects captured image data as an ArrayBuffer.", "OCR_INPUT_INVALID");
+      }
+      if (!options.imagePath) {
+        throw createOcrError("RapidOCR requires a capture path.", "OCR_INPUT_INVALID");
+      }
+      if (destroyed) {
+        throw createOcrError("RapidOCR backend has been disposed.", "OCR_BACKEND_DISPOSED");
+      }
+
+      await start();
+      const worker = child;
+      if (!worker?.stdin?.writable) {
+        throw createOcrError("RapidOCR worker is not available.", "OCR_RAPIDOCR_EXITED");
+      }
+
+      const id = nextRequestId;
+      nextRequestId += 1;
+      const response = new Promise((resolve, reject) => {
+        pending.set(id, { resolve, reject });
+      });
+      const serialized = `${JSON.stringify({ id, imagePath: options.imagePath })}\n`;
+
+      try {
+        worker.stdin.write(serialized, "utf8", (error) => {
+          const request = pending.get(id);
+          if (error && request) {
+            pending.delete(id);
+            request.reject(createOcrError(
+              `Could not send image to RapidOCR worker: ${error.message}`,
+              "OCR_RAPIDOCR_WRITE_FAILED"
+            ));
+          }
+        });
+      } catch (error) {
+        pending.delete(id);
+        throw createOcrError(
+          `Could not send image to RapidOCR worker: ${error.message}`,
+          "OCR_RAPIDOCR_WRITE_FAILED"
+        );
+      }
+
+      return response;
+    },
+    async destroy() {
+      if (destroyed) {
+        return;
+      }
+      destroyed = true;
+      stopping = true;
+      rejectPending(createOcrError("RapidOCR backend has been disposed.", "OCR_BACKEND_DISPOSED"));
+
+      const worker = child;
+      const exited = exitPromise;
+      if (!worker) {
+        return;
+      }
+
+      if (worker.stdin.writable) {
+        worker.stdin.end();
+      }
+
+      let timeout;
+      await Promise.race([
+        exited,
+        new Promise((resolve) => {
+          timeout = setTimeout(() => {
+            worker.kill();
+            resolve();
+          }, 2000);
+        })
+      ]);
+      clearTimeout(timeout);
     }
   };
 }

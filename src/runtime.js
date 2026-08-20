@@ -2,7 +2,7 @@ import fs from "node:fs";
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { createApplicationController } from "./applications.js";
-import { createExternalBackend, createPaddleBackend } from "./ocr.js";
+import { createExternalBackend, createPaddleBackend, createRapidOcrBackend } from "./ocr.js";
 import { createWindowController, createWindowsWindowHost } from "./windows.js";
 import { createCommandError, resolveExecutablePath } from "./commands/shared.js";
 
@@ -64,17 +64,39 @@ export function createRuntime(overrides = {}, environment = {}) {
 
     const externalPath = options.ocr || environment.ROBOT_OCR_PATH || overrides.ocrPath;
     const binary = externalPath ? resolveExecutablePath(cwd, externalPath) : null;
+    const backendName = options.ocrBackend || environment.ROBOT_OCR_BACKEND || "paddle";
     const model = options.ocrModel || "tiny";
-    const key = binary ? `external:${binary}` : `paddle:${model}`;
+    const rapidOcrCommand = resolveExecutablePath(
+      cwd,
+      environment.ROBOT_RAPIDOCR_COMMAND || overrides.rapidOcrCommand || "uv"
+    );
+    if (!binary && !["paddle", "rapidocr"].includes(backendName)) {
+      throw createCommandError(`Unsupported OCR backend: ${backendName}.`, "OCR_BACKEND_UNSUPPORTED");
+    }
+    const key = binary
+      ? `external:${binary}`
+      : backendName === "rapidocr"
+        ? `rapidocr:${rapidOcrCommand}`
+        : `paddle:${model}`;
     let backend = ocrBackends.get(key);
 
     if (!backend) {
-      backend = binary
-        ? createExternalBackend(binary, processRunner)
-        : createPaddleBackend({
+      if (binary) {
+        backend = createExternalBackend(binary, processRunner);
+      } else if (backendName === "rapidocr") {
+        backend = createRapidOcrBackend(
+          {
+            command: rapidOcrCommand,
+            workerPath: overrides.rapidOcrWorkerPath
+          },
+          { spawnProcess: overrides.spawnProcess }
+        );
+      } else {
+        backend = createPaddleBackend({
           model,
           strategy: options.ocrStrategy
         });
+      }
       if (!backend || typeof backend.recognize !== "function") {
         throw createCommandError("OCR backend must provide a recognize method.", "OCR_BACKEND_INVALID");
       }

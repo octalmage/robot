@@ -34,6 +34,7 @@ test("config reports built-ins and initializes recommended agent defaults withou
     exists: false,
     defaults: {
       cpm: 600,
+      ocrBackend: "paddle",
       ocrModel: "tiny",
       ocrStrategy: "per-box",
       fuzzy: false
@@ -52,6 +53,7 @@ test("config reports built-ins and initializes recommended agent defaults withou
   assert.deepEqual(saved, {
     defaults: {
       cpm: 600,
+      ocrBackend: "paddle",
       ocrModel: "small",
       ocrStrategy: "per-box",
       fuzzy: true
@@ -71,6 +73,7 @@ test("shared config defaults apply to OCR and per-command then CLI options take 
   const configPath = createConfigFixture(t, {
     defaults: {
       cpm: 900,
+      ocrBackend: "paddle",
       ocrModel: "small",
       ocrStrategy: "per-line",
       fuzzy: true
@@ -106,6 +109,7 @@ test("shared config defaults apply to OCR and per-command then CLI options take 
   assert.equal(configured.found, true);
   assert.equal(configured.matchType, "fuzzy");
   assert.equal(configured.fuzzy, true);
+  assert.equal(configured.ocrBackend, "custom");
   assert.equal(configured.ocrModel, "small");
   assert.equal(configured.ocrStrategy, "per-line");
 
@@ -154,6 +158,7 @@ test("sequence inherits configured window, typing, and OCR defaults while step o
   const configPath = createConfigFixture(t, {
     defaults: {
       window: "Minecraft",
+      ocrBackend: "paddle",
       cpm: 700,
       ocrModel: "small",
       ocrStrategy: "per-line",
@@ -223,6 +228,7 @@ test("sequence inherits configured window, typing, and OCR defaults while step o
   assert.equal(result.results[1].found, true);
   assert.equal(result.results[1].matchType, "fuzzy");
   assert.equal(result.results[1].fuzzy, true);
+  assert.equal(result.results[1].ocrBackend, "custom");
   assert.equal(result.results[1].ocrModel, "small");
   assert.equal(result.results[1].ocrStrategy, "per-line");
   assert.equal(result.results[2].found, true);
@@ -255,6 +261,7 @@ test("text inventories recognized labels with bounds and screen points", async (
   }), 0);
   const result = JSON.parse(stdout.read());
 
+  assert.equal(result.ocrBackend, "custom");
   assert.equal(result.ocrModel, "tiny");
   assert.equal(result.ocrStrategy, "per-box");
   assert.deepEqual(result.displays[0].items, [{

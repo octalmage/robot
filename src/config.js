@@ -5,6 +5,7 @@ import { Errors, z } from "incur";
 
 export const BUILTIN_AUTOMATION_DEFAULTS = Object.freeze({
   cpm: 600,
+  ocrBackend: "paddle",
   ocrModel: "tiny",
   ocrStrategy: "per-box",
   fuzzy: false
@@ -12,6 +13,7 @@ export const BUILTIN_AUTOMATION_DEFAULTS = Object.freeze({
 
 export const RECOMMENDED_AGENT_DEFAULTS = Object.freeze({
   cpm: 600,
+  ocrBackend: "paddle",
   ocrModel: "small",
   ocrStrategy: "per-box",
   fuzzy: true
@@ -19,6 +21,7 @@ export const RECOMMENDED_AGENT_DEFAULTS = Object.freeze({
 
 const userDefaultsSchema = z.object({
   cpm: z.number().positive().optional(),
+  ocrBackend: z.enum(["paddle", "rapidocr"]).optional(),
   ocrModel: z.enum(["tiny", "small"]).optional(),
   ocrStrategy: z.enum(["per-box", "per-line", "cross-line"]).optional(),
   fuzzy: z.boolean().optional(),
@@ -27,6 +30,7 @@ const userDefaultsSchema = z.object({
 
 const resolvedDefaultsSchema = z.object({
   cpm: z.number().positive(),
+  ocrBackend: z.enum(["paddle", "rapidocr"]),
   ocrModel: z.enum(["tiny", "small"]),
   ocrStrategy: z.enum(["per-box", "per-line", "cross-line"]),
   fuzzy: z.boolean(),
@@ -48,6 +52,7 @@ const WINDOW_COMMANDS = [
   "sequence"
 ];
 const DEFAULT_TARGETS = {
+  ocrBackend: [...TEXT_COMMANDS, "sequence"],
   cpm: ["type", "sequence"],
   ocrModel: [...TEXT_COMMANDS, "sequence"],
   ocrStrategy: [...TEXT_COMMANDS, "sequence"],

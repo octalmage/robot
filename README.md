@@ -44,6 +44,7 @@ robot clickText "Message General"
 robot waitForText "cycle complete" --window Minecraft
 robot waitForText Seed --window Minecraft --fuzzy
 robot text --window Minecraft --x 505 --y 280 --width 950 --height 540
+robot text --window Minecraft --ocr-backend rapidocr
 
 robot sequence --window Minecraft --steps steps.json
 ```
@@ -71,6 +72,7 @@ This creates `~/.config/robot/config.json` (or
 {
   "defaults": {
     "cpm": 600,
+    "ocrBackend": "paddle",
     "ocrModel": "small",
     "ocrStrategy": "per-box",
     "fuzzy": true
@@ -214,8 +216,8 @@ robot text --window Minecraft --x 505 --y 280 --width 950 --height 540
 
 Paddle OCR defaults to `--ocr-strategy per-box`, which works well for compact
 UI labels. `per-line` is intended for lines of prose, and `cross-line` batches
-multiple lines. `--confidence` sets the minimum accepted recognition
-confidence.
+multiple lines. `--ocr-model` and `--ocr-strategy` apply only to the Paddle
+backend. `--confidence` sets the minimum accepted recognition confidence.
 
 `robot text --keep-capture` adds `captureImagePath` to each display result and
 leaves that OCR input on disk for inspection. Normally, use `allItems` before
@@ -223,16 +225,33 @@ requesting a retained screenshot.
 
 ## OCR models and external backends
 
-Text commands use `ppu-paddle-ocr` with ONNX Runtime Node. The built-in
-`--ocr-model tiny` downloads about 6 MB on first use; `robot config --init`
-selects the higher-capacity roughly 30 MB `small` model for subsequent commands.
-Detection,
-recognition, and dictionary files are stored in `~/.cache/ppu-paddle-ocr` and
-verified by size and SHA-256 digest before use.
+Text commands use `ppu-paddle-ocr` with ONNX Runtime Node by default. The
+built-in `--ocr-model tiny` downloads about 6 MB on first use; `robot config
+--init` selects the higher-capacity roughly 30 MB `small` model for subsequent
+commands. Detection, recognition, and dictionary files are stored in
+`~/.cache/ppu-paddle-ocr` and verified by size and SHA-256 digest before use.
+
+RapidOCR is available as an optional local backend:
+
+```sh
+robot text --window Minecraft --ocr-backend rapidocr
+robot waitForText "cycle complete" --window Minecraft --ocr-backend rapidocr
+```
+
+Install [`uv`](https://docs.astral.sh/uv/getting-started/installation/) and
+ensure `uv` is on `PATH`. On first use, Robot creates a locked Python
+environment containing RapidOCR 3.9.2 and ONNX Runtime 1.29.0 in uv's cache.
+The worker uses PP-OCRv6 Small, stays alive for the command, and is reused
+across displays, polling attempts, and sequence steps. Results report
+`ocrBackend: "rapidocr"`, `ocrModel: "small"`, and `ocrStrategy: "per-line"`.
+Set `"ocrBackend": "rapidocr"` in shared defaults to enable it by default, or
+set `ROBOT_OCR_BACKEND=rapidocr`. `ROBOT_RAPIDOCR_COMMAND` selects another uv
+executable path.
 
 Select an external OCR executable with `--ocr <command>` or
-`ROBOT_OCR_PATH`. The executable receives `--img <capture.bmp>` and, when
-provided, `--rec-langs <langs>`. It must print a JSON array:
+`ROBOT_OCR_PATH`; an external command takes precedence over `--ocr-backend`.
+The executable receives `--img <capture.bmp>` and, when provided,
+`--rec-langs <langs>`. It must print a JSON array:
 
 ```json
 [

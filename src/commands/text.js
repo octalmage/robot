@@ -25,7 +25,10 @@ const matchTypeSchema = z.enum(["exact", "startsWith", "contains", "fuzzy"]);
 const TEXT_MATCH_RANK = { exact: 0, startsWith: 1, contains: 2, fuzzy: 3 };
 const MIN_FUZZY_QUERY_LENGTH = 4;
 
+export const ocrBackendOutputSchema = z.enum(["paddle", "rapidocr", "external", "custom"]);
+
 export const textBackendOptionsShape = {
+  ocrBackend: z.enum(["paddle", "rapidocr"]).optional().describe("OCR backend; built-in default: paddle"),
   ocr: z.string().optional().describe("External OCR executable path or command"),
   recLangs: z.string().optional().describe("OCR recognition languages"),
   ocrModel: z.enum(["tiny", "small"]).optional().describe("Paddle OCR model size; built-in default: tiny"),
@@ -64,8 +67,9 @@ const matchEntrySchema = z.object({
 
 const textMatchOutput = z.object({
   query: z.string().describe("Normalized command query"),
-  ocrModel: z.enum(["tiny", "small"]).describe("Applied Paddle OCR model size"),
-  ocrStrategy: z.enum(["per-box", "per-line", "cross-line"]).describe("Applied OCR recognition strategy"),
+  ocrBackend: ocrBackendOutputSchema.describe("Applied OCR backend"),
+  ocrModel: z.enum(["tiny", "small"]).describe("Applied OCR model size"),
+  ocrStrategy: z.enum(["per-box", "per-line", "cross-line"]).describe("Applied OCR result grouping"),
   fuzzy: z.boolean().describe("Whether strict-first fuzzy fallback was enabled"),
   found: z.boolean().describe("Whether a matching occurrence was found"),
   ambiguous: z.boolean().describe("Whether equally ranked fuzzy matches prevented automatic selection"),
@@ -364,11 +368,19 @@ async function performOcr(captureInput, options, runtime) {
   const backend = runtime.getOcrBackend(options);
 
   try {
-    return await backend.recognize(captureInput.image, {
+    const items = await backend.recognize(captureInput.image, {
       imagePath: captureInput.imagePath,
       recLangs: options.recLangs,
       strategy: options.ocrStrategy
     });
+    return {
+      items,
+      backend: backend.name || "custom",
+      model: backend.model || options.ocrModel || "tiny",
+      strategy: backend.name === "rapidocr"
+        ? backend.strategy
+        : options.ocrStrategy || backend.strategy || "per-box"
+    };
   } catch (error) {
     if (error && !error.code) {
       error.code = "OCR_ERROR";
@@ -382,12 +394,15 @@ async function scanTextCapture(capture, query, options, runtime) {
 
   try {
     const captureInput = saveCaptureForOcr(capture, captureTempDir);
-    const ocrItems = await performOcr(captureInput, options, runtime);
+    const ocr = await performOcr(captureInput, options, runtime);
     return {
       capture,
       captureImagePath: captureInput.imagePath,
       captureTempDir,
-      matches: rankTextMatches(query, ocrItems, options)
+      ocrBackend: ocr.backend,
+      ocrModel: ocr.model,
+      ocrStrategy: ocr.strategy,
+      matches: rankTextMatches(query, ocr.items, options)
     };
   } catch (error) {
     fs.rmSync(captureTempDir, { recursive: true, force: true });
@@ -473,6 +488,9 @@ async function collectTextMatch(robot, query, rect, options, runtime) {
       capture: retainedResult.capture,
       captureImagePath: retainedResult.captureImagePath,
       captureTempDir: retainedResult.captureTempDir,
+      ocrBackend: retainedResult.ocrBackend,
+      ocrModel: retainedResult.ocrModel,
+      ocrStrategy: retainedResult.ocrStrategy,
       instances,
       requestedIndex,
       selected,
@@ -533,8 +551,9 @@ function resolveTextQuery(parts, index, supportsTrailingIndex) {
 function buildTextResult(query, result, options) {
   const output = {
     query,
-    ocrModel: options.ocrModel ?? "tiny",
-    ocrStrategy: options.ocrStrategy ?? "per-box",
+    ocrBackend: result.ocrBackend,
+    ocrModel: result.ocrModel,
+    ocrStrategy: result.ocrStrategy,
     fuzzy: !!options.fuzzy,
     found: !!result.selected,
     ambiguous: result.ambiguous,
@@ -657,8 +676,9 @@ export function registerTextCommands(cli) {
       keepCapture: z.boolean().optional().describe("Keep each OCR capture")
     }),
     output: z.object({
-      ocrModel: z.enum(["tiny", "small"]).describe("Applied Paddle OCR model size"),
-      ocrStrategy: z.enum(["per-box", "per-line", "cross-line"]).describe("Applied OCR recognition strategy"),
+      ocrBackend: ocrBackendOutputSchema.describe("Applied OCR backend"),
+      ocrModel: z.enum(["tiny", "small"]).describe("Applied OCR model size"),
+      ocrStrategy: z.enum(["per-box", "per-line", "cross-line"]).describe("Applied OCR result grouping"),
       displays: z.array(z.object({
         displayId: z.number().int().describe("One-based display index"),
         screenX: z.number().describe("Display left screen coordinate"),
@@ -682,6 +702,11 @@ export function registerTextCommands(cli) {
       const displays = [];
       const allText = [];
       const allItems = [];
+      let ocrMetadata = {
+        backend: "custom",
+        model: c.options.ocrModel ?? "tiny",
+        strategy: c.options.ocrStrategy ?? "per-box"
+      };
 
       for (let displayIndex = 0; displayIndex < searchRects.length; displayIndex += 1) {
         const capture = captureWithRect(robot, searchRects[displayIndex]);
@@ -690,8 +715,9 @@ export function registerTextCommands(cli) {
 
         try {
           const captureInput = saveCaptureForOcr(capture, captureTempDir);
-          const ocrItems = await performOcr(captureInput, c.options, runtime);
-          const items = ocrItems.map((item) => ({
+          const ocr = await performOcr(captureInput, c.options, runtime);
+          ocrMetadata = ocr;
+          const items = ocr.items.map((item) => ({
             text: item.text,
             confidence: item.confidence,
             bounds: item.bounds,
@@ -724,8 +750,9 @@ export function registerTextCommands(cli) {
       }
 
       return {
-        ocrModel: c.options.ocrModel ?? "tiny",
-        ocrStrategy: c.options.ocrStrategy ?? "per-box",
+        ocrBackend: ocrMetadata.backend,
+        ocrModel: ocrMetadata.model,
+        ocrStrategy: ocrMetadata.strategy,
         displays,
         allText,
         allItems

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import { z } from "incur";
 import { saveManagedCapture } from "../captures.js";
-import { observeText, textBackendOptionsShape } from "./text.js";
+import { observeText, ocrBackendOutputSchema, textBackendOptionsShape } from "./text.js";
 import {
   clickOptionsShape,
   cpmSchema,
@@ -95,6 +95,7 @@ const sequenceResultSchema = z.object({
   editDistance: z.number().int().nullable().optional().describe("Selected fuzzy edit distance"),
   similarity: z.number().nullable().optional().describe("Selected fuzzy similarity"),
   ambiguous: z.boolean().optional().describe("Whether fuzzy matches were ambiguous"),
+  ocrBackend: ocrBackendOutputSchema.optional().describe("Applied OCR backend"),
   ocrModel: z.enum(["tiny", "small"]).optional().describe("Applied OCR model"),
   ocrStrategy: z.enum(["per-box", "per-line", "cross-line"]).optional().describe("Applied OCR strategy"),
   fuzzy: z.boolean().optional().describe("Whether fuzzy fallback was enabled"),
@@ -182,7 +183,7 @@ function applySequenceDefaults(step, options) {
   }
 
   const resolved = { ...step };
-  for (const name of ["ocr", "recLangs", "ocrModel", "ocrStrategy"]) {
+  for (const name of ["ocrBackend", "ocr", "recLangs", "ocrModel", "ocrStrategy"]) {
     if (resolved[name] === undefined && options[name] !== undefined) {
       resolved[name] = options[name];
     }
@@ -205,6 +206,7 @@ function summarizeTextStep(index, command, query, result, waitResult) {
     found: result.found,
     matchedText: result.text,
     confidence: result.confidence,
+    ocrBackend: result.ocrBackend,
     ocrModel: result.ocrModel,
     ocrStrategy: result.ocrStrategy,
     fuzzy: result.fuzzy,
